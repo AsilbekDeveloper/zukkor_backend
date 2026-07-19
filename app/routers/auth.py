@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from jose import JWTError
-from sqlalchemy import select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -14,8 +14,12 @@ from app.core.security import (
     verify_password,
 )
 from app.dependencies.auth import get_current_user
+from app.models.friendship import Friendship
+from app.models.quiz import Answer, QuizSession, SessionQuestion
 from app.models.user import RefreshToken, User
 from app.schemas.auth import (
+    ChangePasswordRequest,
+    DeleteAccountRequest,
     LoginRequest,
     RefreshRequest,
     RegisterRequest,
@@ -38,13 +42,8 @@ async def register(data: RegisterRequest, db: AsyncSession = Depends(get_db)):
     if existing_email.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bu email allaqachon ro'yxatdan o'tgan")
 
-    existing_username = await db.execute(select(User).where(User.username == data.username))
-    if existing_username.scalar_one_or_none():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bu username band")
-
     user = User(
         email=data.email,
-        username=data.username,
         hashed_password=hash_password(data.password),
     )
     db.add(user)
@@ -156,3 +155,53 @@ async def logout(data: RefreshRequest, db: AsyncSession = Depends(get_db)):
 )
 async def me(current_user: User = Depends(get_current_user)):
     return UserResponse.from_orm_model(current_user)
+
+
+@router.post(
+    "/change-password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Parolni o'zgartirish",
+)
+async def change_password(
+    data: ChangePasswordRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.hashed_password or not verify_password(
+        data.current_password, current_user.hashed_password
+    ):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Joriy parol noto'g'ri")
+
+    current_user.hashed_password = hash_password(data.new_password)
+    await db.commit()
+
+
+@router.delete(
+    "/me",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Hisobni o'chirish",
+    description="Hisobni va unga bog'liq barcha ma'lumotlarni (do'stlar, o'yin tarixi) butunlay o'chiradi.",
+)
+async def delete_account(
+    data: DeleteAccountRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.hashed_password or not verify_password(data.password, current_user.hashed_password):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Parol noto'g'ri")
+
+    user_id = current_user.id
+
+    await db.execute(
+        delete(Friendship).where(or_(Friendship.user_id == user_id, Friendship.friend_id == user_id))
+    )
+
+    session_ids_subq = select(QuizSession.id).where(QuizSession.user_id == user_id)
+    session_question_ids_subq = select(SessionQuestion.id).where(SessionQuestion.session_id.in_(session_ids_subq))
+    await db.execute(delete(Answer).where(Answer.session_question_id.in_(session_question_ids_subq)))
+    await db.execute(delete(SessionQuestion).where(SessionQuestion.session_id.in_(session_ids_subq)))
+    await db.execute(delete(QuizSession).where(QuizSession.user_id == user_id))
+    await db.execute(delete(RefreshToken).where(RefreshToken.user_id == user_id))
+
+    await db.delete(current_user)
+    await db.commit()

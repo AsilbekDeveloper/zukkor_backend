@@ -1,10 +1,11 @@
+.git
+.env
 __pycache__/
 *.pyc
 .venv/
 venv/
-.env
-*.db
 .pytest_cache/
 media/avatars/*
 !media/avatars/.gitkeep
 backups/
+.claude/

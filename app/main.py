@@ -1,17 +1,24 @@
+import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.core.database import Base, engine
-from app.routers import auth
+from app.routers import auth, categories, duel_ws, friends, history, leaderboard, lobby_ws, notifications, quiz, users
+
+Path("media/avatars").mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    expiry_task = asyncio.create_task(duel_ws.expire_duel_invites_loop())
     yield
+    expiry_task.cancel()
 
 
 app = FastAPI(
@@ -47,6 +54,18 @@ app.add_middleware(
 )
 
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
+app.include_router(users.router, prefix="/users", tags=["Users"])
+app.include_router(categories.router, prefix="/categories", tags=["Categories"])
+app.include_router(quiz.router, prefix="/quiz", tags=["Quiz"])
+app.include_router(leaderboard.router, prefix="/leaderboard", tags=["Leaderboard"])
+app.include_router(history.router, prefix="/history", tags=["History"])
+app.include_router(friends.router, prefix="/friends", tags=["Friends"])
+app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
+app.include_router(duel_ws.router, prefix="/ws", tags=["Duel WebSocket"])
+app.include_router(lobby_ws.router, prefix="/ws", tags=["Lobby WebSocket"])
+
+# Avatar rasmlari — autentifikatsiyasiz, ochiq (Flutter Image.network() to'g'ridan-to'g'ri shu manzildan yuklaydi)
+app.mount("/media", StaticFiles(directory="media"), name="media")
 
 
 @app.get("/", tags=["Health"], summary="API holati")
