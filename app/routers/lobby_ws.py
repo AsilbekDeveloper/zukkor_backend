@@ -73,6 +73,9 @@ async def lobby_ws(websocket: WebSocket, token: str = Query(...)):
                     websocket,
                 )
 
+            elif msg_type == "ping":
+                await websocket.send_json({"type": "pong"})
+
             else:
                 await websocket.send_json({"type": "error", "detail": f"Noma'lum xabar turi: {msg_type}"})
     except (WebSocketDisconnect, RuntimeError):

@@ -226,6 +226,8 @@ async def duel_ws(websocket: WebSocket, token: str = Query(...)):
                 await duel_engine.submit_answer(
                     user.id, data.get("duel_id"), data.get("question_index"), data.get("selected_option")
                 )
+            elif msg_type == "ping":
+                await websocket.send_json({"type": "pong"})
             else:
                 await websocket.send_json({"type": "error", "detail": f"Noma'lum xabar turi: {msg_type}"})
     except (WebSocketDisconnect, RuntimeError):
