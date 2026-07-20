@@ -114,7 +114,7 @@ async def _handle_duel_invite(user: User, data: dict, websocket: WebSocket) -> N
             expires_at=now + timedelta(hours=24),
         )
         db.add(invite)
-        db.add(Notification(user_id=to_user_id, kind="duel_challenge"))
+        db.add(Notification(user_id=to_user_id, kind="duel_challenge", related_user_id=user.id))
         await db.commit()
         await db.refresh(invite)
 

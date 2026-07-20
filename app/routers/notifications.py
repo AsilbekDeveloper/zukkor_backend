@@ -7,6 +7,7 @@ from app.dependencies.auth import get_current_user
 from app.models.notification import Notification
 from app.models.user import User
 from app.schemas.notifications import NotificationEntryOut, NotificationsOut
+from app.services.display_name import display_name
 
 router = APIRouter()
 
@@ -27,9 +28,25 @@ async def list_notifications(
     )
     notifications = (await db.execute(stmt)).scalars().all()
 
+    related_user_ids = {n.related_user_id for n in notifications if n.related_user_id is not None}
+    related_users = {}
+    if related_user_ids:
+        users_result = await db.execute(select(User).where(User.id.in_(related_user_ids)))
+        related_users = {u.id: u for u in users_result.scalars().all()}
+
     return NotificationsOut(
         entries=[
-            NotificationEntryOut(id=n.id, kind=n.kind, created_at=n.created_at, is_read=n.is_read)
+            NotificationEntryOut(
+                id=n.id,
+                kind=n.kind,
+                created_at=n.created_at,
+                is_read=n.is_read,
+                related_user_name=(
+                    display_name(related_users[n.related_user_id])
+                    if n.related_user_id in related_users
+                    else None
+                ),
+            )
             for n in notifications
         ]
     )

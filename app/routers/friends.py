@@ -149,7 +149,7 @@ async def send_friend_request(
         return {}
 
     db.add(FriendRequest(from_user_id=current_user.id, to_user_id=to_user_id, status="pending"))
-    db.add(Notification(user_id=to_user_id, kind="friend_request"))
+    db.add(Notification(user_id=to_user_id, kind="friend_request", related_user_id=current_user.id))
     await db.commit()
 
     response.status_code = status.HTTP_201_CREATED

@@ -16,6 +16,7 @@ class NotificationEntryOut(BaseModel):
     kind: str
     created_at: datetime
     is_read: bool
+    related_user_name: str | None = None
 
 
 class NotificationsOut(BaseModel):

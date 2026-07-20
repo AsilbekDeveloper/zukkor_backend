@@ -15,17 +15,9 @@ from app.schemas.history import (
     HistoryOpponentOut,
     HistoryOut,
 )
+from app.services.display_name import display_name as _display_name
 
 router = APIRouter()
-
-
-def _display_name(user: User) -> str:
-    full_name = f"{user.first_name or ''} {user.last_name or ''}".strip()
-    if full_name:
-        return full_name
-    if user.username:
-        return user.username
-    return "Foydalanuvchi"
 
 
 async def _get_solo_entries(db: AsyncSession, user_id: str, limit: int) -> list[HistoryEntryOut]:
