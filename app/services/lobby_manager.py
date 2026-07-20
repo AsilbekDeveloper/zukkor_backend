@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import random
 import string
 import uuid
@@ -14,9 +15,22 @@ from app.models.user import User
 from app.models.xp_event import XpEvent
 from app.services.scoring import calculate_ball
 
+logger = logging.getLogger("zukkor.ws")
+
 MAX_PARTICIPANTS = 20
 DEFAULT_TOTAL_QUESTIONS = 10
 QUESTION_TIME_LIMIT_MS = 15000
+SEND_TIMEOUT_SECONDS = 5
+
+
+async def _safe_send(websocket: WebSocket, message: dict) -> bool:
+    """Osilib qolgan/o'lik ulanish boshqalarga yuborishni bloklamasin deb timeout bilan yuboradi."""
+    try:
+        await asyncio.wait_for(websocket.send_json(message), timeout=SEND_TIMEOUT_SECONDS)
+        return True
+    except Exception as e:
+        logger.warning("lobby: bitta socket'ga yuborib bo'lmadi (%s)", e)
+        return False
 
 
 class _Participant:
@@ -86,27 +100,22 @@ def _participant_public(p: _Participant) -> dict:
 
 async def _broadcast(room: _Room, message: dict) -> None:
     for p in list(room.participants.values()):
-        try:
-            await p.websocket.send_json(message)
-        except Exception:
-            pass  # uzilgan ulanish - disconnect handling o'z vaqtida tozalaydi
+        await _safe_send(p.websocket, message)
 
 
 async def _broadcast_room_update(room: _Room) -> None:
     participants_public = [_participant_public(p) for p in room.participants.values()]
     for p in list(room.participants.values()):
-        try:
-            await p.websocket.send_json(
-                {
-                    "type": "lobby_room_update",
-                    "room_id": room.room_id,
-                    "room_code": room.room_code,
-                    "you_participant_id": p.participant_id,
-                    "participants": participants_public,
-                }
-            )
-        except Exception:
-            pass
+        await _safe_send(
+            p.websocket,
+            {
+                "type": "lobby_room_update",
+                "room_id": room.room_id,
+                "room_code": room.room_code,
+                "you_participant_id": p.participant_id,
+                "participants": participants_public,
+            },
+        )
 
 
 async def create_room(user: User, websocket: WebSocket) -> tuple[str, str]:
@@ -154,10 +163,7 @@ async def leave_room(room_id: str, participant_id: str) -> None:
         if room.game and room.game.timeout_task:
             room.game.timeout_task.cancel()
         for p in list(room.participants.values()):
-            try:
-                await p.websocket.send_json({"type": "lobby_closed", "room_id": room_id})
-            except Exception:
-                pass
+            await _safe_send(p.websocket, {"type": "lobby_closed", "room_id": room_id})
         _rooms.pop(room_id, None)
         _room_code_index.pop(room.room_code, None)
     elif room.participants:
@@ -417,18 +423,16 @@ async def _finish_game(room: _Room) -> None:
 
             participant = room.participants.get(participant_id)
             if participant is not None:
-                try:
-                    await participant.websocket.send_json(
-                        {
-                            "type": "lobby_game_finished",
-                            "room_id": room.room_id,
-                            "standings": standings,
-                            "xp_earned": xp,
-                            "ball_earned": ball,
-                        }
-                    )
-                except Exception:
-                    pass
+                await _safe_send(
+                    participant.websocket,
+                    {
+                        "type": "lobby_game_finished",
+                        "room_id": room.room_id,
+                        "standings": standings,
+                        "xp_earned": xp,
+                        "ball_earned": ball,
+                    },
+                )
 
         await db.commit()
 

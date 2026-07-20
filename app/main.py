@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.database import Base, engine
 from app.routers import auth, categories, duel_ws, friends, history, leaderboard, lobby_ws, notifications, quiz, users
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 Path("media/avatars").mkdir(parents=True, exist_ok=True)
 
