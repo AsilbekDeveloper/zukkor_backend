@@ -14,9 +14,14 @@ from app.core.security import (
     verify_password,
 )
 from app.dependencies.auth import get_current_user
+from app.models.duel import Duel, DuelAnswer, DuelInvite, DuelQuestion
+from app.models.friend_request import FriendRequest
 from app.models.friendship import Friendship
+from app.models.lobby_game import LobbyGameResult
+from app.models.notification import Notification
 from app.models.quiz import Answer, QuizSession, SessionQuestion
 from app.models.user import RefreshToken, User
+from app.models.xp_event import XpEvent
 from app.schemas.auth import (
     ChangePasswordRequest,
     DeleteAccountRequest,
@@ -195,12 +200,35 @@ async def delete_account(
     await db.execute(
         delete(Friendship).where(or_(Friendship.user_id == user_id, Friendship.friend_id == user_id))
     )
+    await db.execute(
+        delete(FriendRequest).where(
+            or_(FriendRequest.from_user_id == user_id, FriendRequest.to_user_id == user_id)
+        )
+    )
 
     session_ids_subq = select(QuizSession.id).where(QuizSession.user_id == user_id)
     session_question_ids_subq = select(SessionQuestion.id).where(SessionQuestion.session_id.in_(session_ids_subq))
     await db.execute(delete(Answer).where(Answer.session_question_id.in_(session_question_ids_subq)))
     await db.execute(delete(SessionQuestion).where(SessionQuestion.session_id.in_(session_ids_subq)))
     await db.execute(delete(QuizSession).where(QuizSession.user_id == user_id))
+
+    duel_ids_subq = select(Duel.id).where(or_(Duel.user_a_id == user_id, Duel.user_b_id == user_id))
+    duel_question_ids_subq = select(DuelQuestion.id).where(DuelQuestion.duel_id.in_(duel_ids_subq))
+    await db.execute(delete(DuelAnswer).where(DuelAnswer.duel_question_id.in_(duel_question_ids_subq)))
+    await db.execute(delete(DuelQuestion).where(DuelQuestion.duel_id.in_(duel_ids_subq)))
+    await db.execute(delete(Duel).where(or_(Duel.user_a_id == user_id, Duel.user_b_id == user_id)))
+    await db.execute(
+        delete(DuelInvite).where(or_(DuelInvite.from_user_id == user_id, DuelInvite.to_user_id == user_id))
+    )
+
+    await db.execute(delete(LobbyGameResult).where(LobbyGameResult.user_id == user_id))
+
+    await db.execute(
+        delete(Notification).where(
+            or_(Notification.user_id == user_id, Notification.related_user_id == user_id)
+        )
+    )
+    await db.execute(delete(XpEvent).where(XpEvent.user_id == user_id))
     await db.execute(delete(RefreshToken).where(RefreshToken.user_id == user_id))
 
     await db.delete(current_user)
