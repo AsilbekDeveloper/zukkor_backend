@@ -102,7 +102,8 @@ def _rank_entry_out(row, current_user_id: str) -> RankEntryOut:
 
 @router.get("", response_model=LeaderboardOut, summary="Reyting ro'yxati")
 async def get_leaderboard(
-    limit: int = 50,
+    limit: int = 20,
+    offset: int = 0,
     scope: str = "all_time",
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -114,6 +115,7 @@ async def get_leaderboard(
         )
 
     limit = min(max(limit, 1), 100)
+    offset = max(offset, 0)
 
     if scope == "weekly":
         ranked = _weekly_ranked_subquery()
@@ -122,13 +124,19 @@ async def get_leaderboard(
     else:
         ranked = _all_time_ranked_subquery()
 
-    # "friends" uchun o'zini entries'dan chiqarib tashlashda kamida `limit` ta haqiqiy do'st qolishi uchun
-    # bitta ortiqcha qator olamiz (agar o'zi top N ichida bo'lsa ham)
-    fetch_limit = limit + 1 if scope == "friends" else limit
-    top_rows = (await db.execute(select(ranked).order_by(ranked.c.rank).limit(fetch_limit))).all()
-
     if scope == "friends":
-        top_rows = [row for row in top_rows if row.id != current_user.id][:limit]
+        # Do'stlar soni tabiiy ravishda cheklangan - butun to'plamni olib, o'zini chiqarib
+        # tashlab, keyin offset/limit'ni shu yerda qo'llaymiz
+        all_rows = (await db.execute(select(ranked).order_by(ranked.c.rank).limit(1000))).all()
+        filtered = [row for row in all_rows if row.id != current_user.id]
+        top_rows = filtered[offset : offset + limit]
+        has_more = len(filtered) > offset + limit
+    else:
+        rows = (
+            await db.execute(select(ranked).order_by(ranked.c.rank).offset(offset).limit(limit + 1))
+        ).all()
+        has_more = len(rows) > limit
+        top_rows = rows[:limit]
 
     me_row = (await db.execute(select(ranked).where(ranked.c.id == current_user.id))).first()
     if me_row is None:
@@ -137,6 +145,7 @@ async def get_leaderboard(
     return LeaderboardOut(
         entries=[_rank_entry_out(row, current_user.id) for row in top_rows],
         me=_rank_entry_out(me_row, current_user.id),
+        has_more=has_more,
     )
 
 

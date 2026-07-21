@@ -37,3 +37,4 @@ class HistoryEntryOut(BaseModel):
 
 class HistoryOut(BaseModel):
     entries: list[HistoryEntryOut]
+    has_more: bool

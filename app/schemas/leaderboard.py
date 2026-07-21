@@ -19,6 +19,7 @@ class RankEntryOut(BaseModel):
 class LeaderboardOut(BaseModel):
     entries: list[RankEntryOut]
     me: RankEntryOut
+    has_more: bool
 
 
 class PlayerStatsOut(BaseModel):

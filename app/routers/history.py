@@ -155,16 +155,26 @@ async def _get_lobby_entries(db: AsyncSession, user_id: str, limit: int) -> list
 
 @router.get("", response_model=HistoryOut, summary="O'yin tarixi")
 async def get_history(
-    limit: int = 50,
+    limit: int = 20,
+    offset: int = 0,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     limit = min(max(limit, 1), 100)
+    offset = max(offset, 0)
 
-    solo_entries = await _get_solo_entries(db, current_user.id, limit)
-    duel_entries = await _get_duel_entries(db, current_user.id, limit)
-    lobby_entries = await _get_lobby_entries(db, current_user.id, limit)
+    # Har bir manbadan yetarlicha (offset+limit+1) qator olamiz - shunda 3 manbani birlashtirib
+    # saralab, [offset:offset+limit] kesib olsak ham, has_more to'g'ri hisoblanadi (manbalar
+    # orasida taqsimlanishidan qat'iy nazar)
+    fetch_count = offset + limit + 1
 
-    merged = sorted(solo_entries + duel_entries + lobby_entries, key=lambda e: e.finished_at, reverse=True)[:limit]
+    solo_entries = await _get_solo_entries(db, current_user.id, fetch_count)
+    duel_entries = await _get_duel_entries(db, current_user.id, fetch_count)
+    lobby_entries = await _get_lobby_entries(db, current_user.id, fetch_count)
 
-    return HistoryOut(entries=merged)
+    merged = sorted(solo_entries + duel_entries + lobby_entries, key=lambda e: e.finished_at, reverse=True)
+
+    page = merged[offset : offset + limit]
+    has_more = len(merged) > offset + limit
+
+    return HistoryOut(entries=page, has_more=has_more)
