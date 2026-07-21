@@ -19,6 +19,7 @@ from app.schemas.quiz import (
     QuizSummary,
 )
 from app.services.scoring import calculate_ball
+from app.services.streak import update_streak
 
 router = APIRouter()
 
@@ -209,6 +210,7 @@ async def answer_question(
 
     current_user.total_xp += xp_earned
     current_user.games_played += 1
+    update_streak(current_user, now)
     db.add(XpEvent(user_id=current_user.id, amount=xp_earned))
 
     await db.commit()

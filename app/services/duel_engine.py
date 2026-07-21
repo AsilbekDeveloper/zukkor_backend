@@ -10,6 +10,7 @@ from app.models.quiz import Category, Question
 from app.models.user import User
 from app.models.xp_event import XpEvent
 from app.services.scoring import calculate_ball
+from app.services.streak import update_streak
 from app.services.ws_manager import manager
 
 DEFAULT_TOTAL_QUESTIONS = 10
@@ -341,8 +342,10 @@ async def _finish_duel(state: _ActiveDuel) -> None:
         user_b = await db.get(User, state.user_b_id)
         user_a.total_xp += a_xp
         user_a.games_played += 1
+        update_streak(user_a, duel.finished_at)
         user_b.total_xp += b_xp
         user_b.games_played += 1
+        update_streak(user_b, duel.finished_at)
 
         db.add(XpEvent(user_id=state.user_a_id, amount=a_xp))
         db.add(XpEvent(user_id=state.user_b_id, amount=b_xp))

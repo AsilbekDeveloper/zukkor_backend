@@ -14,6 +14,7 @@ from app.models.quiz import Category, Question
 from app.models.user import User
 from app.models.xp_event import XpEvent
 from app.services.scoring import calculate_ball
+from app.services.streak import update_streak
 
 logger = logging.getLogger("zukkor.ws")
 
@@ -377,6 +378,7 @@ def _score_for(game: _GameState, participant_id: str) -> tuple[int, int, int]:
 
 async def _finish_game(room: _Room) -> None:
     game = room.game
+    now = datetime.now(timezone.utc)
 
     scores = {pid: _score_for(game, pid) for pid in game.participant_user_ids}
 
@@ -407,6 +409,7 @@ async def _finish_game(room: _Room) -> None:
             if user is not None:
                 user.total_xp += xp
                 user.games_played += 1
+                update_streak(user, now)
                 db.add(XpEvent(user_id=user_id, amount=xp))
 
             db.add(
