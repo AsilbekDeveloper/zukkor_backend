@@ -9,10 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
+from app.models.push_token import PushToken
 from app.models.user import User
 from app.schemas.auth import UserResponse
 from app.schemas.notifications import NotificationPreferences
-from app.schemas.user import ProfileSetupRequest
+from app.schemas.user import ProfileSetupRequest, PushTokenRequest
 
 router = APIRouter()
 
@@ -120,6 +121,30 @@ async def upload_avatar(
     await db.refresh(current_user)
 
     return UserResponse.from_orm_model(current_user)
+
+
+@router.put(
+    "/me/push-token",
+    status_code=status.HTTP_200_OK,
+    summary="Qurilma push tokenini bog'lash",
+    description="FCM tokenni joriy foydalanuvchiga bog'laydi. Token boshqa userga bog'langan bo'lsa, undan olib qayta bog'lanadi.",
+)
+async def set_push_token(
+    data: PushTokenRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(PushToken).where(PushToken.token == data.token))
+    push_token = result.scalar_one_or_none()
+
+    if push_token is not None:
+        push_token.user_id = current_user.id
+        push_token.platform = data.platform
+    else:
+        db.add(PushToken(user_id=current_user.id, token=data.token, platform=data.platform))
+
+    await db.commit()
+    return {}
 
 
 def _notification_preferences_out(user: User) -> NotificationPreferences:

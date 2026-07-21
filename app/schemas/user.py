@@ -4,6 +4,11 @@ ALLOWED_AVATAR_COLORS = {"a-coral", "a-teal", "a-terra", "a-pink", "a-blue"}
 ALLOWED_DIRECTIONS = {"student_uni", "student_school", "exam_prep", "casual"}
 
 
+class PushTokenRequest(BaseModel):
+    token: str = Field(..., min_length=1)
+    platform: str = Field(..., min_length=1, max_length=20)
+
+
 class ProfileSetupRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=30)
     first_name: str = Field(..., min_length=1, max_length=50)

@@ -1,13 +1,12 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from google.auth.transport import requests as google_requests
-from google.oauth2 import id_token as google_id_token
+from firebase_admin import auth as firebase_auth
+from firebase_admin import exceptions as firebase_exceptions
 from jose import JWTError
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import (
     create_access_token,
@@ -22,8 +21,10 @@ from app.models.friend_request import FriendRequest
 from app.models.friendship import Friendship
 from app.models.lobby_game import LobbyGameResult
 from app.models.notification import Notification
+from app.models.push_token import PushToken
 from app.models.quiz import Answer, QuizSession, SessionQuestion
 from app.models.user import RefreshToken, User
+from app.services.firebase import get_firebase_app
 from app.models.xp_event import XpEvent
 from app.schemas.auth import (
     ChangePasswordRequest,
@@ -105,17 +106,21 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
     description="Google ID tokenni tekshiradi, foydalanuvchini topadi yoki yaratadi, access + refresh token qaytaradi.",
 )
 async def google_auth(data: GoogleAuthRequest, db: AsyncSession = Depends(get_db)):
-    try:
-        payload = google_id_token.verify_oauth2_token(
-            data.id_token, google_requests.Request(), settings.GOOGLE_CLIENT_ID
+    app = get_firebase_app()
+    if app is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Google kirish hozircha sozlanmagan"
         )
-    except ValueError:
+
+    try:
+        payload = firebase_auth.verify_id_token(data.id_token, app=app)
+    except (ValueError, firebase_exceptions.FirebaseError):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google token yaroqsiz")
 
     if not payload.get("email_verified", False):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google email tasdiqlanmagan")
 
-    google_id = payload["sub"]
+    google_id = payload["uid"]
     email = payload["email"]
 
     result = await db.execute(select(User).where(User.google_id == google_id))
@@ -282,6 +287,7 @@ async def delete_account(
     )
     await db.execute(delete(XpEvent).where(XpEvent.user_id == user_id))
     await db.execute(delete(RefreshToken).where(RefreshToken.user_id == user_id))
+    await db.execute(delete(PushToken).where(PushToken.user_id == user_id))
 
     await db.delete(current_user)
     await db.commit()

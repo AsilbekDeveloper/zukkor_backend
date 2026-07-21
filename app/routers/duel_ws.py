@@ -11,6 +11,8 @@ from app.models.notification import Notification
 from app.models.quiz import Category, Question
 from app.models.user import User
 from app.services import duel_engine
+from app.services.display_name import display_name
+from app.services.push import send_push_to_user
 from app.services.ws_auth import authenticate_ws
 from app.services.ws_manager import manager
 
@@ -117,6 +119,8 @@ async def _handle_duel_invite(user: User, data: dict, websocket: WebSocket) -> N
         db.add(Notification(user_id=to_user_id, kind="duel_challenge", related_user_id=user.id))
         await db.commit()
         await db.refresh(invite)
+
+        await send_push_to_user(db, to_user_id, "Duel taklifi", f"{display_name(user)} sizni duelga chaqirdi")
 
         from_user_public = _user_public(user)
         category_summary = await _category_summary(db, category)
