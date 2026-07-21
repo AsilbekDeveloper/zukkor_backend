@@ -1,10 +1,13 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from jose import JWTError
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import (
     create_access_token,
@@ -25,6 +28,7 @@ from app.models.xp_event import XpEvent
 from app.schemas.auth import (
     ChangePasswordRequest,
     DeleteAccountRequest,
+    GoogleAuthRequest,
     LoginRequest,
     RefreshRequest,
     RegisterRequest,
@@ -78,6 +82,54 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
 
     if not user or not verify_password(data.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email yoki parol noto'g'ri")
+
+    if not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hisob faol emas")
+
+    access_token = create_access_token({"sub": user.id})
+    refresh_token_str = create_refresh_token({"sub": user.id})
+
+    rt_payload = decode_token(refresh_token_str)
+    expires_at = datetime.fromtimestamp(rt_payload["exp"], tz=timezone.utc)
+
+    db.add(RefreshToken(token=refresh_token_str, user_id=user.id, expires_at=expires_at))
+    await db.commit()
+
+    return TokenResponse(access_token=access_token, refresh_token=refresh_token_str)
+
+
+@router.post(
+    "/google",
+    response_model=TokenResponse,
+    summary="Google orqali kirish",
+    description="Google ID tokenni tekshiradi, foydalanuvchini topadi yoki yaratadi, access + refresh token qaytaradi.",
+)
+async def google_auth(data: GoogleAuthRequest, db: AsyncSession = Depends(get_db)):
+    try:
+        payload = google_id_token.verify_oauth2_token(
+            data.id_token, google_requests.Request(), settings.GOOGLE_CLIENT_ID
+        )
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google token yaroqsiz")
+
+    if not payload.get("email_verified", False):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Google email tasdiqlanmagan")
+
+    google_id = payload["sub"]
+    email = payload["email"]
+
+    result = await db.execute(select(User).where(User.google_id == google_id))
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+        if user is not None:
+            user.google_id = google_id
+        else:
+            user = User(email=email, google_id=google_id, auth_provider="google")
+            db.add(user)
+            await db.flush()
 
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hisob faol emas")

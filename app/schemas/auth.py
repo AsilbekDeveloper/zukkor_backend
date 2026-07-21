@@ -30,6 +30,10 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 
+class GoogleAuthRequest(BaseModel):
+    id_token: str = Field(..., description="Google ID token")
+
+
 class RefreshRequest(BaseModel):
     refresh_token: str = Field(..., description="Refresh token")
 
