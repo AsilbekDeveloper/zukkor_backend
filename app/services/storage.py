@@ -1,81 +1,62 @@
-"""Avatar rasmlarini saqlash — Cloudflare R2 (S3-mos) yoki lokal fayl tizimi.
+"""Avatar rasmlarini saqlash — Cloudinary yoki lokal fayl tizimi.
 
-R2 sozlangan bo'lsa (env o'zgaruvchilari to'ldirilgan) rasmlar bulutga
-yuklanadi va hech qachon yo'qolmaydi. Sozlanmagan bo'lsa lokal `media/avatars/`
-papkasiga tushib qolinadi — bu faqat dev uchun, chunki Render'ning vaqtinchalik
-diski qayta ishga tushganda tozalanadi.
+Cloudinary sozlangan bo'lsa (CLOUDINARY_URL to'ldirilgan) rasmlar bulutga
+yuklanadi va hech qachon yo'qolmaydi. Sozlanmagan bo'lsa lokal
+`media/avatars/` papkasiga tushib qolinadi — bu faqat dev uchun, chunki
+Render'ning vaqtinchalik diski qayta ishga tushganda tozalanadi.
 """
 
+import io
 import logging
 import uuid
 from pathlib import Path
 
-import boto3
-from botocore.config import Config as BotoConfig
+import cloudinary
+import cloudinary.uploader
 
 from app.core.config import settings
 
 logger = logging.getLogger("zukkor.storage")
 
 _LOCAL_ROOT = Path("media/avatars")
-_KEY_PREFIX = "avatars"
+_CLOUDINARY_FOLDER = "zukkor/avatars"
 
-_client = None
-_client_init_attempted = False
-
-
-def is_r2_configured() -> bool:
-    return bool(
-        settings.R2_ACCOUNT_ID
-        and settings.R2_ACCESS_KEY_ID
-        and settings.R2_SECRET_ACCESS_KEY
-        and settings.R2_BUCKET
-        and settings.R2_PUBLIC_BASE_URL
-    )
+_configured = False
 
 
-def _get_client():
-    """R2 S3-mos klientini birinchi chaqiruvda yaratadi (firebase bilan bir xil naqsh)."""
-    global _client, _client_init_attempted
-    if _client is not None:
-        return _client
-    if _client_init_attempted:
-        return None
-    _client_init_attempted = True
+def is_cloudinary_configured() -> bool:
+    return bool(settings.CLOUDINARY_URL)
 
-    _client = boto3.client(
-        "s3",
-        endpoint_url=f"https://{settings.R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
-        aws_access_key_id=settings.R2_ACCESS_KEY_ID,
-        aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
-        region_name="auto",
-        config=BotoConfig(signature_version="s3v4"),
-    )
-    return _client
+
+def _ensure_configured() -> None:
+    """Cloudinary SDK'sini birinchi chaqiruvda sozlaydi (firebase bilan bir xil naqsh)."""
+    global _configured
+    if _configured:
+        return
+    cloudinary.config(cloudinary_url=settings.CLOUDINARY_URL, secure=True)
+    _configured = True
 
 
 def save_avatar(data: bytes, ext: str, content_type: str, local_base_url: str) -> str:
     """Rasm baytlarini saqlaydi va mutlaq ommaviy URL qaytaradi.
 
-    R2 sozlangan bo'lsa bulutga yozadi (URL sozlamalardagi ommaviy bazadan).
-    Aks holda lokal diskka yozadi va URL'ni [local_base_url] (odatda
-    so'rovning base_url'i) asosida quradi — klient rasmni yuklay olishi uchun
-    mutlaq bo'lishi shart.
+    Cloudinary sozlangan bo'lsa bulutga yuklaydi (CDN URL qaytadi). Aks holda
+    lokal diskka yozadi va URL'ni [local_base_url] (odatda so'rovning
+    base_url'i) asosida quradi — klient rasmni yuklay olishi uchun mutlaq
+    bo'lishi shart.
     """
-    filename = f"{uuid.uuid4()}.{ext}"
-
-    if is_r2_configured():
-        client = _get_client()
-        key = f"{_KEY_PREFIX}/{filename}"
-        client.put_object(
-            Bucket=settings.R2_BUCKET,
-            Key=key,
-            Body=data,
-            ContentType=content_type,
-            CacheControl="public, max-age=31536000, immutable",
+    if is_cloudinary_configured():
+        _ensure_configured()
+        result = cloudinary.uploader.upload(
+            io.BytesIO(data),
+            folder=_CLOUDINARY_FOLDER,
+            public_id=str(uuid.uuid4()),
+            resource_type="image",
+            overwrite=True,
         )
-        return f"{settings.R2_PUBLIC_BASE_URL.rstrip('/')}/{key}"
+        return result["secure_url"]
 
+    filename = f"{uuid.uuid4()}.{ext}"
     _LOCAL_ROOT.mkdir(parents=True, exist_ok=True)
     (_LOCAL_ROOT / filename).write_bytes(data)
     return f"{local_base_url.rstrip('/')}/media/avatars/{filename}"
@@ -88,18 +69,35 @@ def delete_avatar(url: str | None) -> None:
     if not url:
         return
 
-    filename = url.rsplit("/", 1)[-1]
-    if not filename:
-        return
-
     try:
-        if is_r2_configured():
-            _get_client().delete_object(
-                Bucket=settings.R2_BUCKET, Key=f"{_KEY_PREFIX}/{filename}"
-            )
+        if is_cloudinary_configured():
+            public_id = _cloudinary_public_id(url)
+            if public_id:
+                _ensure_configured()
+                cloudinary.uploader.destroy(public_id, resource_type="image", invalidate=True)
         else:
-            old_path = _LOCAL_ROOT / filename
-            if old_path.is_file():
-                old_path.unlink()
+            filename = url.rsplit("/", 1)[-1]
+            if filename:
+                old_path = _LOCAL_ROOT / filename
+                if old_path.is_file():
+                    old_path.unlink()
     except Exception:  # noqa: BLE001 — o'chirish hech qachon so'rovni yiqitmasin
         logger.warning("Eski avatarni o'chirib bo'lmadi: %s", url, exc_info=True)
+
+
+def _cloudinary_public_id(url: str) -> str | None:
+    """Cloudinary secure_url'idan public_id'ni ajratib oladi.
+
+    Masalan `https://res.cloudinary.com/<cloud>/image/upload/v123/zukkor/avatars/abc.jpg`
+    dan `zukkor/avatars/abc` (versiya prefiksi va kengaytmasiz).
+    """
+    marker = "/upload/"
+    idx = url.find(marker)
+    if idx == -1:
+        return None
+    tail = url[idx + len(marker):]  # "v123/zukkor/avatars/abc.jpg"
+    parts = tail.split("/")
+    if parts and parts[0].startswith("v") and parts[0][1:].isdigit():
+        parts = parts[1:]  # versiya prefiksini olib tashlash
+    path = "/".join(parts)
+    return path.rsplit(".", 1)[0] or None  # kengaytmani olib tashlash
