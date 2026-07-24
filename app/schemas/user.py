@@ -13,7 +13,7 @@ class ProfileSetupRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=30)
     first_name: str = Field(..., min_length=1, max_length=50)
     last_name: str = Field(..., min_length=1, max_length=50)
-    avatar_color: str
+    avatar_color: str | None = None
     direction: str
 
     # Introduction so'rovnomasi - ixtiyoriy, kelmasa mavjud qiymatga tegilmaydi
@@ -30,8 +30,8 @@ class ProfileSetupRequest(BaseModel):
 
     @field_validator("avatar_color")
     @classmethod
-    def avatar_color_valid(cls, v: str) -> str:
-        if v not in ALLOWED_AVATAR_COLORS:
+    def avatar_color_valid(cls, v: str | None) -> str | None:
+        if v is not None and v not in ALLOWED_AVATAR_COLORS:
             raise ValueError(f"avatar_color quyidagilardan biri bo'lishi kerak: {ALLOWED_AVATAR_COLORS}")
         return v
 

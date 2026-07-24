@@ -56,8 +56,9 @@ async def setup_profile(
     current_user.username = data.username
     current_user.first_name = data.first_name
     current_user.last_name = data.last_name
-    current_user.avatar_color = data.avatar_color
-    current_user.avatar_image_path = None  # rang tanlansa, rasm tozalanadi — ular bir-birini istisno qiladi
+    if data.avatar_color is not None:
+        current_user.avatar_color = data.avatar_color
+        current_user.avatar_image_path = None  # rang tanlansa, rasm tozalanadi — ular bir-birini istisno qiladi
     current_user.direction = data.direction
     current_user.onboarding_completed = True
 
