@@ -1,10 +1,6 @@
-import io
-import uuid
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
-from PIL import Image, UnidentifiedImageError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -14,18 +10,20 @@ from app.models.user import User
 from app.schemas.auth import UserResponse
 from app.schemas.notifications import NotificationPreferences
 from app.schemas.user import ProfileSetupRequest, PushTokenRequest
+from app.services import storage
+from app.services.image_processing import InvalidImageError, process_avatar
 
 router = APIRouter()
 
-MEDIA_ROOT = Path("media/avatars")
-MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 MAX_AVATAR_SIZE_BYTES = 2 * 1024 * 1024  # 2MB
-ALLOWED_CONTENT_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 
 @router.get("/username-available", summary="Username bandligini tekshirish")
 async def check_username_available(
-    username: str = Query(..., min_length=3, max_length=30),
+    # Naqsh profil saqlashdagi validatsiya bilan bir xil — aks holda yaroqsiz
+    # username "band emas" deb ko'rsatilib, keyin saqlashda rad etilardi.
+    username: str = Query(..., min_length=3, max_length=30, pattern=r"^[a-zA-Z0-9_]+$"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -70,7 +68,15 @@ async def setup_profile(
     if data.quiz_liking is not None:
         current_user.quiz_liking = data.quiz_liking
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Yuqoridagi tekshiruvdan keyin, commit'gacha bo'lgan oraliqda boshqa
+        # so'rov shu username'ni band qilib qo'ygan bo'lsa (poyga) — unique
+        # cheklovi buziladi. 500 o'rniga toza 400 qaytaramiz.
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bu username band")
+
     await db.refresh(current_user)
 
     return UserResponse.from_orm_model(current_user)
@@ -98,28 +104,26 @@ async def upload_avatar(
     if len(contents) > MAX_AVATAR_SIZE_BYTES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rasm hajmi 2MB dan oshmasligi kerak")
 
+    # Xom baytlarni saqlamaymiz — Pillow orqali qayta kodlaymiz (rasm ekanini
+    # tekshiradi, EXIF/metadatani tozalaydi, o'lchamni chegaralaydi).
     try:
-        Image.open(io.BytesIO(contents)).verify()
-    except (UnidentifiedImageError, OSError):
+        processed, ext, content_type = process_avatar(contents)
+    except InvalidImageError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Fayl yaroqli rasm emas")
 
-    # eski avatar faylini diskdan o'chirish (agar bor bo'lsa)
-    if current_user.avatar_image_path:
-        old_filename = current_user.avatar_image_path.rsplit("/", 1)[-1]
-        old_path = MEDIA_ROOT / old_filename
-        if old_path.is_file():
-            old_path.unlink()
+    old_avatar_url = current_user.avatar_image_path
+    public_url = storage.save_avatar(processed, ext, content_type, str(request.base_url))
 
-    ext = ALLOWED_CONTENT_TYPES[image.content_type]
-    filename = f"{uuid.uuid4()}.{ext}"
-    (MEDIA_ROOT / filename).write_bytes(contents)
-
-    public_url = f"{str(request.base_url).rstrip('/')}/media/avatars/{filename}"
     current_user.avatar_image_path = public_url
     current_user.avatar_color = None
 
     await db.commit()
     await db.refresh(current_user)
+
+    # Faqat DB muvaffaqiyatli yangilangach eski faylni o'chiramiz — aks holda
+    # commit muvaffaqiyatsiz bo'lsa, hali ishlatilayotgan rasmni yo'qotgan
+    # bo'lar edik.
+    storage.delete_avatar(old_avatar_url)
 
     return UserResponse.from_orm_model(current_user)
 
