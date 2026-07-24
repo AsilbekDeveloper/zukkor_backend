@@ -10,11 +10,16 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     FIREBASE_SERVICE_ACCOUNT_PATH: str = "/etc/secrets/firebase-service-account.json"
 
-    # Cloudinary — avatar rasmlari uchun doimiy saqlash (rasmga ixtisoslashgan,
-    # ichki CDN + optimizatsiya). Bitta URL: cloudinary://<key>:<secret>@<cloud>.
+    # Cloudflare R2 (S3-mos) — avatar rasmlari uchun doimiy saqlash.
     # Bo'sh bo'lsa lokal fayl tizimiga tushib qolinadi (faqat dev uchun;
     # Render'ning vaqtinchalik diskida rasmlar restartda yo'qoladi).
-    CLOUDINARY_URL: str = ""
+    R2_ACCOUNT_ID: str = ""
+    R2_ACCESS_KEY_ID: str = ""
+    R2_SECRET_ACCESS_KEY: str = ""
+    R2_BUCKET: str = ""
+    # Bucket'ning ommaviy bazaviy URL'i (masalan https://cdn.zukkor.app yoki
+    # r2.dev subdomeni) — oxirida '/' bo'lmasin.
+    R2_PUBLIC_BASE_URL: str = ""
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

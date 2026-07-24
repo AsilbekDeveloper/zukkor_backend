@@ -17,9 +17,17 @@ services:
         value: "30"
       - key: REFRESH_TOKEN_EXPIRE_DAYS
         value: "7"
-      # Cloudinary — avatar saqlash. Maxfiy URL Render dashboard'da qo'lda
-      # kiritiladi (sync: false — repoga yozilmaydi).
-      - key: CLOUDINARY_URL
+      # Cloudflare R2 — avatar saqlash. Maxfiy qiymatlar Render dashboard'da
+      # qo'lda kiritiladi (sync: false — repoga yozilmaydi).
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_PUBLIC_BASE_URL
         sync: false
 
 databases:
