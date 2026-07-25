@@ -120,7 +120,9 @@ async def _handle_duel_invite(user: User, data: dict, websocket: WebSocket) -> N
         await db.commit()
         await db.refresh(invite)
 
-        await send_push_to_user(db, to_user_id, "Duel taklifi", f"{display_name(user)} sizni duelga chaqirdi")
+        to_user = await db.get(User, to_user_id)
+        if to_user is not None and to_user.duel_invites:
+            await send_push_to_user(db, to_user_id, "Duel taklifi", f"{display_name(user)} sizni duelga chaqirdi")
 
         from_user_public = _user_public(user)
         category_summary = await _category_summary(db, category)

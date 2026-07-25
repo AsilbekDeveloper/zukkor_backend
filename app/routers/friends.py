@@ -161,9 +161,10 @@ async def send_friend_request(
     db.add(Notification(user_id=to_user_id, kind="friend_request", related_user_id=current_user.id))
     await db.commit()
 
-    await send_push_to_user(
-        db, to_user_id, "Yangi do'stlik so'rovi", f"{display_name(current_user)} sizga do'stlik so'rovi yubordi"
-    )
+    if target_user.friend_requests:
+        await send_push_to_user(
+            db, to_user_id, "Yangi do'stlik so'rovi", f"{display_name(current_user)} sizga do'stlik so'rovi yubordi"
+        )
 
     response.status_code = status.HTTP_201_CREATED
     return {}
