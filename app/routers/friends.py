@@ -44,6 +44,13 @@ async def _are_friends(db: AsyncSession, user_id: str, other_id: str) -> bool:
 
 
 async def _create_mutual_friendship(db: AsyncSession, user_a_id: str, user_b_id: str) -> None:
+    # Idempotent — `FriendRequest`da unique cheklov yo'q (faqat Python
+    # darajasida tekshiriladi), shuning uchun tez ketma-ket ikki so'rov
+    # (masalan qo'sh bosish) bir xil juftlik uchun ikkita pending yozuv
+    # yaratishi mumkin. Ikkalasi ham qabul qilinsa, bu tekshiruv bo'lmasa
+    # ikkinchisi `Friendship.uq_friendship_pair`ni buzib 500 berardi.
+    if await _are_friends(db, user_a_id, user_b_id):
+        return
     db.add(Friendship(user_id=user_a_id, friend_id=user_b_id))
     db.add(Friendship(user_id=user_b_id, friend_id=user_a_id))
 
