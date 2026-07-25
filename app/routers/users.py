@@ -51,12 +51,17 @@ async def setup_profile(
     if existing_username.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bu username band")
 
+    old_avatar_url = None
     current_user.username = data.username
     current_user.first_name = data.first_name
     current_user.last_name = data.last_name
     if data.avatar_color is not None:
+        # rang tanlansa, rasm tozalanadi — ular bir-birini istisno qiladi.
+        # Eski rasm faylini ham o'chiramiz (aks holda R2'da abadiy ishlatilmay
+        # yotib qoladi) — commit muvaffaqiyatli bo'lgandan keyin, pastda.
+        old_avatar_url = current_user.avatar_image_path
         current_user.avatar_color = data.avatar_color
-        current_user.avatar_image_path = None  # rang tanlansa, rasm tozalanadi — ular bir-birini istisno qiladi
+        current_user.avatar_image_path = None
     current_user.direction = data.direction
     current_user.onboarding_completed = True
 
@@ -78,6 +83,11 @@ async def setup_profile(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bu username band")
 
     await db.refresh(current_user)
+
+    # Faqat DB muvaffaqiyatli yangilangach eski faylni o'chiramiz — aks holda
+    # commit muvaffaqiyatsiz bo'lsa, hali ishlatilayotgan rasmni yo'qotgan
+    # bo'lar edik.
+    storage.delete_avatar(old_avatar_url)
 
     return UserResponse.from_orm_model(current_user)
 
