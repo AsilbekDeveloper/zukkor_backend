@@ -9,9 +9,14 @@ def _password_strength(v: str) -> str:
     return v
 
 
+# bcrypt faqat dastlabki 72 baytni hisobga oladi — undan uzun parol jimgina
+# kesiladi, shuning uchun shu chegarada rad etamiz (client ham shu cheklovda).
+MAX_PASSWORD_LEN = 72
+
+
 class RegisterRequest(BaseModel):
     email: EmailStr = Field(..., examples=["ali@example.com"])
-    password: str = Field(..., min_length=8, examples=["Parol1234"])
+    password: str = Field(..., min_length=8, max_length=MAX_PASSWORD_LEN, examples=["Parol1234"])
 
     @field_validator("password")
     @classmethod
@@ -40,7 +45,7 @@ class RefreshRequest(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str = Field(..., min_length=8, examples=["YangiParol1234"])
+    new_password: str = Field(..., min_length=8, max_length=MAX_PASSWORD_LEN, examples=["YangiParol1234"])
 
     @field_validator("new_password")
     @classmethod
