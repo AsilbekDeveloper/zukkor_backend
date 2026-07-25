@@ -6,7 +6,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
+from app.models.duel import DuelAnswer
 from app.models.friendship import Friendship
+from app.models.lobby_game import LobbyGame, LobbyGameResult
 from app.models.quiz import Answer, QuizSession, SessionQuestion
 from app.models.user import User
 from app.models.xp_event import XpEvent
@@ -160,7 +162,12 @@ async def get_player_stats(
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Foydalanuvchi topilmadi")
 
-    totals_stmt = (
+    # "G'alaba foizi" — barcha rejimlarda (yakka, duel, xona) javob berilgan
+    # savollarning necha foizi to'g'ri bo'lganini bildiradi, xuddi yonidagi
+    # "Jami o'yinlar" (`games_played`) kabi barcha rejimlarni birlashtiradi -
+    # faqat yakka viktorina javoblarini hisoblasa, faol duel/xona
+    # o'yinchisining foizi haqiqiy natijasiga mos kelmay qolardi.
+    solo_stmt = (
         select(
             func.count(Answer.id).label("total"),
             func.count(Answer.id).filter(Answer.is_correct.is_(True)).label("correct"),
@@ -170,8 +177,28 @@ async def get_player_stats(
         .join(QuizSession, QuizSession.id == SessionQuestion.session_id)
         .where(QuizSession.user_id == user_id)
     )
-    totals = (await db.execute(totals_stmt)).one()
-    win_rate = round(totals.correct / totals.total * 100) if totals.total else 0
+    solo_totals = (await db.execute(solo_stmt)).one()
+
+    duel_stmt = select(
+        func.count(DuelAnswer.id).label("total"),
+        func.count(DuelAnswer.id).filter(DuelAnswer.is_correct.is_(True)).label("correct"),
+    ).where(DuelAnswer.user_id == user_id)
+    duel_totals = (await db.execute(duel_stmt)).one()
+
+    lobby_stmt = (
+        select(
+            func.coalesce(func.sum(LobbyGame.total_questions), 0).label("total"),
+            func.coalesce(func.sum(LobbyGameResult.correct), 0).label("correct"),
+        )
+        .select_from(LobbyGameResult)
+        .join(LobbyGame, LobbyGame.id == LobbyGameResult.lobby_game_id)
+        .where(LobbyGameResult.user_id == user_id)
+    )
+    lobby_totals = (await db.execute(lobby_stmt)).one()
+
+    total_answered = solo_totals.total + duel_totals.total + lobby_totals.total
+    total_correct = solo_totals.correct + duel_totals.correct + lobby_totals.correct
+    win_rate = round(total_correct / total_answered * 100) if total_answered else 0
 
     user = await db.get(User, user_id)
     level, level_title, next_level_xp = compute_level(row.total_xp)
