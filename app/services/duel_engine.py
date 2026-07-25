@@ -338,17 +338,26 @@ async def _finish_duel(state: _ActiveDuel) -> None:
         duel.user_b_xp = b_xp
         duel.user_b_result = b_result
 
+        # A participant may have deleted their account mid-duel - their side
+        # of this very Duel row was already reassigned to the placeholder
+        # user, but `state.user_a_id`/`state.user_b_id` here still hold the
+        # ORIGINAL id captured when the duel started, so `db.get` returns
+        # None. Skipping xp/streak/XpEvent for that side (rather than
+        # crashing on a None attribute access) keeps the commit - and the
+        # still-active opponent's own notification below - from failing too.
         user_a = await db.get(User, state.user_a_id)
-        user_b = await db.get(User, state.user_b_id)
-        user_a.total_xp += a_xp
-        user_a.games_played += 1
-        update_streak(user_a, duel.finished_at)
-        user_b.total_xp += b_xp
-        user_b.games_played += 1
-        update_streak(user_b, duel.finished_at)
+        if user_a is not None:
+            user_a.total_xp += a_xp
+            user_a.games_played += 1
+            update_streak(user_a, duel.finished_at)
+            db.add(XpEvent(user_id=state.user_a_id, amount=a_xp))
 
-        db.add(XpEvent(user_id=state.user_a_id, amount=a_xp))
-        db.add(XpEvent(user_id=state.user_b_id, amount=b_xp))
+        user_b = await db.get(User, state.user_b_id)
+        if user_b is not None:
+            user_b.total_xp += b_xp
+            user_b.games_played += 1
+            update_streak(user_b, duel.finished_at)
+            db.add(XpEvent(user_id=state.user_b_id, amount=b_xp))
 
         await db.commit()
 

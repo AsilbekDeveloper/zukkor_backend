@@ -410,11 +410,19 @@ async def _finish_game(room: _Room) -> None:
             xp = round(ball / 100)
 
             user = await db.get(User, user_id)
-            if user is not None:
-                user.total_xp += xp
-                user.games_played += 1
-                update_streak(user, now)
-                db.add(XpEvent(user_id=user_id, amount=xp))
+            if user is None:
+                # Account was deleted mid-game - `LobbyGameResult.user_id`
+                # is a hard FK, so inserting a row for it would raise an
+                # IntegrityError at commit time and roll back every OTHER
+                # participant's XP/result too. Skip this participant
+                # entirely rather than let one deleted account cost
+                # everyone else their earned XP for the round.
+                continue
+
+            user.total_xp += xp
+            user.games_played += 1
+            update_streak(user, now)
+            db.add(XpEvent(user_id=user_id, amount=xp))
 
             db.add(
                 LobbyGameResult(
