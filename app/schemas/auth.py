@@ -54,7 +54,10 @@ class ChangePasswordRequest(BaseModel):
 
 
 class DeleteAccountRequest(BaseModel):
-    password: str
+    # Google-only hisoblarda parol umuman yo'q (hashed_password None) -
+    # bunday hisob uchun bu maydon talab qilinmaydi, tekshiruv shunga
+    # qarab moslashadi (routers/auth.py'dagi delete_account'ga qarang).
+    password: str | None = None
 
 
 class UserResponse(BaseModel):
@@ -69,6 +72,7 @@ class UserResponse(BaseModel):
     avatar_image_path: str | None
     direction: str | None
     onboarding_completed: bool
+    auth_provider: str
 
     model_config = {"from_attributes": True}
 
@@ -86,4 +90,5 @@ class UserResponse(BaseModel):
             avatar_image_path=user.avatar_image_path,
             direction=user.direction,
             onboarding_completed=user.onboarding_completed,
+            auth_provider=user.auth_provider,
         )

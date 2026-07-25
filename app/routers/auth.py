@@ -275,8 +275,13 @@ async def delete_account(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if not current_user.hashed_password or not verify_password(data.password, current_user.hashed_password):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Parol noto'g'ri")
+    # Google orqali kirgan hisoblarda parol umuman yo'q (hashed_password None)
+    # - bunday hisob uchun parol tekshiruvi o'tkazib yuboriladi, chunki
+    # tekshirishga hech narsa yo'q; joriy JWT sessiyaning o'zi identifikatsiya
+    # sifatida yetarli. Aks holda (email/parol hisobi) parol majburiy.
+    if current_user.hashed_password is not None:
+        if not data.password or not verify_password(data.password, current_user.hashed_password):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Parol noto'g'ri")
 
     user_id = current_user.id
 
