@@ -238,6 +238,32 @@ async def change_password(
     await db.commit()
 
 
+DELETED_USER_ID = "00000000-0000-0000-0000-000000000000"
+
+
+async def _ensure_deleted_user_placeholder(db: AsyncSession) -> None:
+    """A finished Duel row is shared with the opponent's own history, so
+    deleting it outright would silently erase that duel from the OTHER
+    (still-active) user's History screen. Reassigning the departing
+    user's side of the row to this fixed placeholder account keeps the
+    opponent's entry intact instead - `display_name`/avatar already fall
+    back cleanly since it has no real name or avatar set.
+    """
+    if await db.get(User, DELETED_USER_ID) is not None:
+        return
+    db.add(
+        User(
+            id=DELETED_USER_ID,
+            email="deleted-user@zukkor.internal",
+            username=None,
+            hashed_password=None,
+            is_active=False,
+            first_name="O'chirilgan foydalanuvchi",
+            avatar_color=None,
+        )
+    )
+
+
 @router.delete(
     "/me",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -273,7 +299,18 @@ async def delete_account(
     duel_question_ids_subq = select(DuelQuestion.id).where(DuelQuestion.duel_id.in_(duel_ids_subq))
     await db.execute(delete(DuelAnswer).where(DuelAnswer.duel_question_id.in_(duel_question_ids_subq)))
     await db.execute(delete(DuelQuestion).where(DuelQuestion.duel_id.in_(duel_ids_subq)))
-    await db.execute(delete(Duel).where(or_(Duel.user_a_id == user_id, Duel.user_b_id == user_id)))
+
+    own_duels = (
+        await db.execute(select(Duel).where(or_(Duel.user_a_id == user_id, Duel.user_b_id == user_id)))
+    ).scalars().all()
+    if own_duels:
+        await _ensure_deleted_user_placeholder(db)
+        for duel in own_duels:
+            if duel.user_a_id == user_id:
+                duel.user_a_id = DELETED_USER_ID
+            else:
+                duel.user_b_id = DELETED_USER_ID
+
     await db.execute(
         delete(DuelInvite).where(or_(DuelInvite.from_user_id == user_id, DuelInvite.to_user_id == user_id))
     )
