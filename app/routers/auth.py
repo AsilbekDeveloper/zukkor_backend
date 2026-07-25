@@ -5,6 +5,7 @@ from firebase_admin import auth as firebase_auth
 from firebase_admin import exceptions as firebase_exceptions
 from jose import JWTError
 from sqlalchemy import delete, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -57,7 +58,15 @@ async def register(data: RegisterRequest, db: AsyncSession = Depends(get_db)):
         hashed_password=hash_password(data.password),
     )
     db.add(user)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Yuqoridagi tekshiruvdan keyin, flush'gacha bo'lgan oraliqda boshqa
+        # so'rov shu email bilan ro'yxatdan o'tgan bo'lsa (poyga, masalan
+        # ikki marta bosilgan "Ro'yxatdan o'tish") - unique cheklovi
+        # buziladi. 500 o'rniga toza 400 qaytaramiz.
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bu email allaqachon ro'yxatdan o'tgan")
 
     access_token = create_access_token({"sub": user.id})
     refresh_token_str = create_refresh_token({"sub": user.id})
@@ -81,7 +90,10 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == data.email))
     user = result.scalar_one_or_none()
 
-    if not user or not verify_password(data.password, user.hashed_password):
+    # `user.hashed_password` is null for a Google-only account (never set
+    # a password) - `verify_password` would crash trying to hash-compare
+    # against None, so that case must be rejected before ever calling it.
+    if not user or not user.hashed_password or not verify_password(data.password, user.hashed_password):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email yoki parol noto'g'ri")
 
     if not user.is_active:
