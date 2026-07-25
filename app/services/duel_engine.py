@@ -35,6 +35,15 @@ class _ActiveDuel:
 
 
 _active_duels: dict[str, _ActiveDuel] = {}
+# user_id -> duel_id, kept in lockstep with `_active_duels` — a client only
+# ever tracks a single `DuelGameState`, so if a user were let into a second
+# concurrent duel it would silently overwrite the first one client-side,
+# abandoning whichever opponent isn't in the newest duel with no explanation.
+_user_active_duel: dict[str, str] = {}
+
+
+def is_user_in_active_duel(user_id: str) -> bool:
+    return user_id in _user_active_duel
 
 
 def _user_public(user: User) -> dict:
@@ -106,6 +115,8 @@ async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_
 
     state = _ActiveDuel(duel.id, user_a_id, user_b_id, category_id, actual_total)
     _active_duels[duel.id] = state
+    _user_active_duel[user_a_id] = duel.id
+    _user_active_duel[user_b_id] = duel.id
 
     await manager.send_to_user(
         user_a_id,
@@ -387,3 +398,5 @@ async def _finish_duel(state: _ActiveDuel) -> None:
     )
 
     _active_duels.pop(state.duel_id, None)
+    _user_active_duel.pop(state.user_a_id, None)
+    _user_active_duel.pop(state.user_b_id, None)

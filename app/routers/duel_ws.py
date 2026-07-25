@@ -179,8 +179,12 @@ async def _handle_duel_invite_respond(user: User, data: dict, websocket: WebSock
 
     delivered = await manager.send_to_user(from_user_id, message)
 
-    # Duel faqat taklif yuboruvchi hozir ulangan bo'lsagina boshlanadi — aks holda hech kim savolni ololmaydi
-    if accept and delivered:
+    # Duel faqat taklif yuboruvchi hozir ulangan bo'lsagina boshlanadi — aks holda hech kim savolni ololmaydi.
+    # Ikkala tomon ham hozircha boshqa duelda bo'lmasligi kerak — aks holda klient bitta joriy duel holatini
+    # saqlaydi, ikkinchisi uni sezdirmasdan bosib o'tib, birinchi raqib hech narsa tushunmasdan tashlab
+    # ketilgan bo'lardi (DuelGameScreen'ning 20 soniyalik "start failed" himoyasi bu holatni ham qamrab oladi).
+    already_busy = duel_engine.is_user_in_active_duel(from_user_id) or duel_engine.is_user_in_active_duel(user.id)
+    if accept and delivered and not already_busy:
         await duel_engine.start_duel(category_id, from_user_id, user.id, question_count)
 
 
