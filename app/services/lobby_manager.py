@@ -146,6 +146,10 @@ async def join_room(room_code: str, user: User, websocket: WebSocket) -> tuple[s
         await websocket.send_json({"type": "lobby_join_error", "reason": "room_full"})
         return None
 
+    if room.game is not None:
+        await websocket.send_json({"type": "lobby_join_error", "reason": "already_started"})
+        return None
+
     participant_id = str(uuid.uuid4())
     room.participants[participant_id] = _Participant(participant_id, user, websocket, is_host=False)
 
