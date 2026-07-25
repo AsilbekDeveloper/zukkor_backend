@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -174,7 +175,15 @@ async def answer_question(
             option_order=next_option_order,
         )
         db.add(next_session_question)
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            # `Answer.session_question_id` unique cheklovi - agar shu savolga
+            # deyarli bir vaqtda ikkinchi so'rov ham javob yuborgan bo'lsa
+            # (masalan tarmoq sekinlashib, klient qayta yuborsa), 500 o'rniga
+            # toza 400 qaytaramiz.
+            await db.rollback()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bu savolga allaqachon javob berilgan")
         await db.refresh(next_session_question)
 
         return AnswerResponse(
@@ -213,7 +222,13 @@ async def answer_question(
     update_streak(current_user, now)
     db.add(XpEvent(user_id=current_user.id, amount=xp_earned))
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Xuddi yuqoridagi (keyingi savol) tarmoqdagi kabi — bu oxirgi
+        # savol uchun ham xuddi shu poyga holati mumkin.
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bu savolga allaqachon javob berilgan")
 
     return AnswerResponse(
         correct=is_correct,
