@@ -12,14 +12,22 @@ LEVEL_TITLES = [
 ]
 
 
-def compute_level(total_xp: int) -> tuple[int, str, int]:
-    """total_xp'dan (level, level_title, next_level_xp) qaytaradi."""
+def compute_level(total_xp: int) -> tuple[int, str, int, int]:
+    """total_xp'dan (level, level_title, next_level_xp, current_level_xp) qaytaradi.
+
+    `current_level_xp` - joriy levelning boshlanish chegarasi (masalan level 2
+    uchun 250) - klient progress-bar'ni `(total_xp - current_level_xp) /
+    (next_level_xp - current_level_xp)` sifatida to'g'ri hisoblashi uchun kerak;
+    faqat `total_xp / next_level_xp` ishlatilsa, level 1'dan yuqori har bir
+    foydalanuvchi uchun natija noto'g'ri (shishirilgan) chiqadi.
+    """
     level = total_xp // LEVEL_XP_STEP + 1
     next_level_xp = level * LEVEL_XP_STEP
+    current_level_xp = (level - 1) * LEVEL_XP_STEP
 
     title = LEVEL_TITLES[0][1]
     for min_level, name in LEVEL_TITLES:
         if level >= min_level:
             title = name
 
-    return level, title, next_level_xp
+    return level, title, next_level_xp, current_level_xp

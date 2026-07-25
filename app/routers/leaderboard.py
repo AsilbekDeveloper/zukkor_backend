@@ -85,7 +85,7 @@ def _friends_ranked_subquery(current_user_id: str):
 
 
 def _rank_entry_out(row, current_user_id: str) -> RankEntryOut:
-    level, level_title, next_level_xp = compute_level(row.total_xp)
+    level, level_title, next_level_xp, _current_level_xp = compute_level(row.total_xp)
     return RankEntryOut(
         user_id=row.id,
         rank=row.rank,
@@ -201,7 +201,7 @@ async def get_player_stats(
     win_rate = round(total_correct / total_answered * 100) if total_answered else 0
 
     user = await db.get(User, user_id)
-    level, level_title, next_level_xp = compute_level(row.total_xp)
+    level, level_title, next_level_xp, current_level_xp = compute_level(row.total_xp)
 
     return PlayerStatsOut(
         user_id=row.id,
@@ -215,6 +215,7 @@ async def get_player_stats(
         level=level,
         level_title=level_title,
         next_level_xp=next_level_xp,
+        current_level_xp=current_level_xp,
         current_streak=user.current_streak,
         longest_streak=user.longest_streak,
         games_played=user.games_played,

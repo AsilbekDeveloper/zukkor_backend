@@ -34,6 +34,7 @@ class PlayerStatsOut(BaseModel):
     level: int
     level_title: str
     next_level_xp: int
+    current_level_xp: int
     current_streak: int
     longest_streak: int
     games_played: int
