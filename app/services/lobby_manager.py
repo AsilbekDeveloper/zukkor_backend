@@ -65,6 +65,14 @@ class _GameState:
 
         self.timeout_task: asyncio.Task | None = None
         self.lock = asyncio.Lock()
+        # True o'yin yakunlanganini bildiradi. Kerak: oxirgi savol timeout
+        # bilan tugagan bir zumda, javob bermagan ishtirokchidan kechikkan
+        # javob kelsa - `submit_answer` game'ni lock olishdan OLDIN oladi;
+        # `_finish_game` lock ostida yakunlab, lockni bo'shatgach kechikkan
+        # javob lockni oladi. index/answered tekshiruvlari buni ushlamaydi,
+        # natijada bu bayroqsiz butun ikkinchi LobbyGame + dublikat natijalar
+        # + hammaga ikki barobar XP yozilib qolardi.
+        self.finished = False
 
 
 class _Room:
@@ -315,6 +323,8 @@ async def submit_answer(room_id: str, participant_id: str, question_index, selec
         return
 
     async with game.lock:
+        if game.finished:
+            return  # o'yin allaqachon yakunlangan (masalan oxirgi savol timeout bilan) - kechikkan javob e'tiborsiz
         if question_index != game.current_index:
             return  # eskirgan/xato javob - e'tiborga olinmaydi
         if participant_id in game.current_answered:
@@ -382,6 +392,9 @@ def _score_for(game: _GameState, participant_id: str) -> tuple[int, int, int]:
 
 async def _finish_game(room: _Room) -> None:
     game = room.game
+    # Lock ostida (chaqiruvchilar orqali) - kechikkan javob o'yinni qayta
+    # yakunlab yuborishini oldini oladi, submit_answer'dagi tekshiruvga qarang.
+    game.finished = True
     now = datetime.now(timezone.utc)
 
     scores = {pid: _score_for(game, pid) for pid in game.participant_user_ids}

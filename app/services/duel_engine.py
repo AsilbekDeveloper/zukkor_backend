@@ -32,6 +32,15 @@ class _ActiveDuel:
         self.used_question_ids: list[int] = []
         self.timeout_task: asyncio.Task | None = None
         self.lock = asyncio.Lock()
+        # True o'yin yakunlanganini bildiradi. Kerak: oxirgi savol timeout
+        # bilan tugagan bir zumda, javob bermagan o'yinchidan kechikkan javob
+        # kelsa - `submit_answer` state'ni lock olishdan OLDIN oladi, keyin
+        # lock kutadi; `_finish_duel` lock ostida yakunlab, lockni bo'shatgach
+        # kechikkan javob lockni oladi. current_index/answered tekshiruvlari
+        # bu holatni ushlamaydi (index hali oxirgi, o'yinchi javob bermagan),
+        # shuning uchun bu bayroqsiz duel qayta yakunlanib, XP ikki barobar
+        # yozilib qolardi.
+        self.finished = False
 
 
 _active_duels: dict[str, _ActiveDuel] = {}
@@ -208,6 +217,8 @@ async def submit_answer(user_id: str, duel_id: str, question_index, selected_opt
         return
 
     async with state.lock:
+        if state.finished:
+            return  # duel allaqachon yakunlangan (masalan oxirgi savol timeout bilan) - kechikkan javob e'tiborsiz
         if question_index != state.current_index:
             return  # eskirgan/xato javob - e'tiborga olinmaydi
         if user_id in state.answered_user_ids:
@@ -295,6 +306,10 @@ async def _resolve_question(state: _ActiveDuel) -> None:
 
 
 async def _finish_duel(state: _ActiveDuel) -> None:
+    # Lock ostida (chaqiruvchilar orqali) - kechikkan javob duelni qayta
+    # yakunlab yuborishini oldini oladi, submit_answer'dagi tekshiruvga qarang.
+    state.finished = True
+
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(DuelAnswer)
