@@ -74,6 +74,13 @@ class UserResponse(BaseModel):
     onboarding_completed: bool
     auth_provider: str
 
+    # Introduction so'rovnomasi javoblari - onboarding'da yig'ilib
+    # `PATCH /users/me/profile`ga yozilgan, lekin shu paytgacha hech qanday
+    # javobda qaytarilmagan edi (Profile/Edit Profile'da umuman ko'rinmasdi).
+    interests: list[str] | None
+    study_place: str | None
+    quiz_liking: str | None
+
     model_config = {"from_attributes": True}
 
     @classmethod
@@ -91,4 +98,7 @@ class UserResponse(BaseModel):
             direction=user.direction,
             onboarding_completed=user.onboarding_completed,
             auth_provider=user.auth_provider,
+            interests=user.interests,
+            study_place=user.study_place,
+            quiz_liking=user.quiz_liking,
         )
