@@ -6,7 +6,10 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqladmin import Admin
 
+from app.admin import AdminAuth, CategoryAdmin, QuestionAdmin
+from app.core.config import settings
 from app.core.database import Base, engine
 from app.routers import auth, categories, duel_ws, friends, history, leaderboard, lobby_ws, notifications, quiz, users
 
@@ -69,6 +72,10 @@ app.include_router(lobby_ws.router, prefix="/ws", tags=["Lobby WebSocket"])
 
 # Avatar rasmlari — autentifikatsiyasiz, ochiq (Flutter Image.network() to'g'ridan-to'g'ri shu manzildan yuklaydi)
 app.mount("/media", StaticFiles(directory="media"), name="media")
+
+admin = Admin(app, engine, authentication_backend=AdminAuth(secret_key=settings.SECRET_KEY), title="Zukkor Admin")
+admin.add_view(CategoryAdmin)
+admin.add_view(QuestionAdmin)
 
 
 @app.get("/", tags=["Health"], summary="API holati")

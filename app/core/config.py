@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     # r2.dev subdomeni) — oxirida '/' bo'lmasin.
     R2_PUBLIC_BASE_URL: str = ""
 
+    # Admin panel (SQLAdmin, /admin) — kategoriya/savol boshqaruvi uchun.
+    # Bo'sh qoldirilmasin - Render environment variable orqali o'rnatiladi,
+    # kodga yozilmaydi.
+    ADMIN_USERNAME: str = ""
+    ADMIN_PASSWORD: str = ""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("DATABASE_URL")

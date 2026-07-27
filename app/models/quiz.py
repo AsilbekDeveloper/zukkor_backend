@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 
@@ -23,6 +23,7 @@ class Question(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"))
+    category: Mapped["Category"] = relationship()  # admin panelida kategoriya nomini dropdown qilib ko'rsatish uchun
     question_text: Mapped[str] = mapped_column(Text)
     options: Mapped[list] = mapped_column(JSON)  # ["variant1", "variant2", "variant3", "variant4"]
     correct_option_index: Mapped[int] = mapped_column(Integer)
