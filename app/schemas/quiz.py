@@ -33,12 +33,19 @@ class AnswerRequest(BaseModel):
     selected_option: int | None = None
 
 
+class QuestionBreakdownOut(BaseModel):
+    order: int
+    question_text: str
+    is_correct: bool
+
+
 class QuizSummary(BaseModel):
     total_ball: int
     correct_count: int
     total_questions: int
     xp_earned: int
     new_total_xp: int
+    breakdown: list[QuestionBreakdownOut] = []
 
 
 class AnswerResponse(BaseModel):

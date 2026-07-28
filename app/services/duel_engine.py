@@ -324,11 +324,21 @@ async def _finish_duel(state: _ActiveDuel) -> None:
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(
-            select(DuelAnswer)
+            select(DuelAnswer, DuelQuestion.order, Question.question_text)
             .join(DuelQuestion, DuelQuestion.id == DuelAnswer.duel_question_id)
+            .join(Question, Question.id == DuelQuestion.question_id)
             .where(DuelQuestion.duel_id == state.duel_id)
+            .order_by(DuelQuestion.order)
         )
-        all_answers = result.scalars().all()
+        all_rows = result.all()
+        all_answers = [row[0] for row in all_rows]
+
+        def _breakdown_for(uid: str) -> list[dict]:
+            return [
+                {"order": order, "question_text": question_text, "is_correct": answer.is_correct}
+                for answer, order, question_text in all_rows
+                if answer.user_id == uid
+            ]
 
         def _score_for(uid: str):
             user_answers = [a for a in all_answers if a.user_id == uid]
@@ -409,6 +419,7 @@ async def _finish_duel(state: _ActiveDuel) -> None:
             "opponent_score": {"correct": b_correct, "total": state.total_questions, "total_time_ms": b_time},
             "xp_earned": a_xp,
             "ball_earned": a_ball,
+            "breakdown": _breakdown_for(state.user_a_id),
         },
     )
     await manager.send_to_user(
@@ -421,6 +432,7 @@ async def _finish_duel(state: _ActiveDuel) -> None:
             "opponent_score": {"correct": a_correct, "total": state.total_questions, "total_time_ms": a_time},
             "xp_earned": b_xp,
             "ball_earned": b_ball,
+            "breakdown": _breakdown_for(state.user_b_id),
         },
     )
 

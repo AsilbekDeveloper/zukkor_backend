@@ -431,6 +431,25 @@ async def _finish_game(room: _Room) -> None:
         db.add(lobby_game)
         await db.flush()  # lobby_game.id (server-generated) - keyingi FK yozuvlar uchun kerak
 
+        # `answers_log[pid][i]` va `used_question_ids[i]` bitta savol
+        # indeksiga mos keladi (ikkalasi ham har savol yakunlanganda bir
+        # vaqtda to'ldiriladi) - shu orqali har bir ishtirokchi uchun
+        # savol-bo'yicha to'g'ri/noto'g'ri ro'yxatini quramiz.
+        text_rows = await db.execute(
+            select(Question.id, Question.question_text).where(Question.id.in_(game.used_question_ids))
+        )
+        question_texts = dict(text_rows.all())
+
+        def _breakdown_for(pid: str) -> list[dict]:
+            return [
+                {
+                    "order": i,
+                    "question_text": question_texts.get(qid, ""),
+                    "is_correct": game.answers_log[pid][i]["is_correct"],
+                }
+                for i, qid in enumerate(game.used_question_ids)
+            ]
+
         for participant_id, user_id in game.participant_user_ids.items():
             correct, total_time_ms, ball = scores[participant_id]
             xp = round(ball / 100)
@@ -472,6 +491,7 @@ async def _finish_game(room: _Room) -> None:
                         "standings": standings,
                         "xp_earned": xp,
                         "ball_earned": ball,
+                        "breakdown": _breakdown_for(participant_id),
                     },
                 )
 

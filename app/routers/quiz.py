@@ -14,6 +14,7 @@ from app.models.xp_event import XpEvent
 from app.schemas.quiz import (
     AnswerRequest,
     AnswerResponse,
+    QuestionBreakdownOut,
     QuestionOut,
     QuizStartRequest,
     QuizStartResponse,
@@ -204,15 +205,22 @@ async def answer_question(
     session.finished_at = now
 
     all_answers_result = await db.execute(
-        select(Answer)
+        select(Answer, SessionQuestion.order, Question.question_text)
         .join(SessionQuestion, Answer.session_question_id == SessionQuestion.id)
+        .join(Question, Question.id == SessionQuestion.question_id)
         .where(SessionQuestion.session_id == session_id)
+        .order_by(SessionQuestion.order)
     )
-    all_answers = all_answers_result.scalars().all()
+    all_rows = all_answers_result.all()
+    all_answers = [row[0] for row in all_rows]
 
     total_ball = sum(a.ball for a in all_answers)
     correct_count = sum(1 for a in all_answers if a.is_correct)
     xp_earned = round(total_ball / 100)
+    breakdown = [
+        QuestionBreakdownOut(order=order, question_text=question_text, is_correct=answer.is_correct)
+        for answer, order, question_text in all_rows
+    ]
 
     session.total_ball = total_ball
     session.total_xp_earned = xp_earned
@@ -241,5 +249,6 @@ async def answer_question(
             total_questions=session_question.total,
             xp_earned=xp_earned,
             new_total_xp=current_user.total_xp,
+            breakdown=breakdown,
         ),
     )
