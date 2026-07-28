@@ -22,6 +22,13 @@ MAX_PARTICIPANTS = 20
 DEFAULT_TOTAL_QUESTIONS = 10
 QUESTION_TIME_LIMIT_MS = 15000
 SEND_TIMEOUT_SECONDS = 5
+PRE_GAME_COUNTDOWN_SECONDS = 5
+# Har savoldan keyin to'g'ri/noto'g'ri belgisi ekranda ko'rinib turishi
+# uchun keyingi savolga o'tishdan oldingi minimal pauza - buni qo'shmasdan
+# hamma tezda javob bersa (yoki vaqt tugasa), keyingi savol darhol
+# translyatsiya qilinib, so'nggi javob bergan ishtirokchining natijasi bir
+# zumda almashtirilib ketardi.
+REVEAL_PAUSE_SECONDS = 1.5
 
 
 async def _safe_send(websocket: WebSocket, message: dict) -> bool:
@@ -259,6 +266,10 @@ async def start_game(
         },
     )
 
+    # Har bir klient mos 5 soniyalik "5,4,3,2,1" countdown ko'rsatadi - shu
+    # bilan sinxron turish uchun birinchi savol shu qadar kechiktiriladi.
+    await asyncio.sleep(PRE_GAME_COUNTDOWN_SECONDS)
+
     async with room.game.lock:
         await _advance_to_next_question(room)
 
@@ -375,6 +386,8 @@ async def _resolve_question(room: _Room) -> None:
     for pid in game.participant_user_ids:
         if pid not in game.current_answered:
             game.answers_log[pid].append({"elapsed_ms": QUESTION_TIME_LIMIT_MS, "is_correct": False})
+
+    await asyncio.sleep(REVEAL_PAUSE_SECONDS)
 
     if game.current_index + 1 < game.total_questions:
         await _advance_to_next_question(room)

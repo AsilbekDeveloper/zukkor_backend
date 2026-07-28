@@ -30,7 +30,7 @@ def _all_time_ranked_subquery():
             User.avatar_color,
             User.avatar_image_path,
             User.total_xp,
-            func.row_number().over(order_by=(User.total_xp.desc(), User.created_at.asc())).label("rank"),
+            func.row_number().over(order_by=(User.total_xp.desc(), User.created_at.asc(), User.id.asc())).label("rank"),
         )
         .where(User.is_active.is_(True))
         .subquery()
@@ -55,7 +55,7 @@ def _weekly_ranked_subquery():
             User.avatar_color,
             User.avatar_image_path,
             weekly_total.label("total_xp"),
-            func.row_number().over(order_by=(weekly_total.desc(), User.created_at.asc())).label("rank"),
+            func.row_number().over(order_by=(weekly_total.desc(), User.created_at.asc(), User.id.asc())).label("rank"),
         )
         .outerjoin(weekly_xp_subq, weekly_xp_subq.c.user_id == User.id)
         .where(User.is_active.is_(True))
@@ -74,7 +74,7 @@ def _friends_ranked_subquery(current_user_id: str):
             User.avatar_color,
             User.avatar_image_path,
             User.total_xp,
-            func.row_number().over(order_by=(User.total_xp.desc(), User.created_at.asc())).label("rank"),
+            func.row_number().over(order_by=(User.total_xp.desc(), User.created_at.asc(), User.id.asc())).label("rank"),
         )
         .where(
             User.is_active.is_(True),

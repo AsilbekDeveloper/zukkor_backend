@@ -15,6 +15,12 @@ from app.services.ws_manager import manager
 
 DEFAULT_TOTAL_QUESTIONS = 10
 QUESTION_TIME_LIMIT_MS = 15000
+PRE_GAME_COUNTDOWN_SECONDS = 5
+# Har savoldan keyin to'g'ri/noto'g'ri belgisi ekranda ko'rinib turishi
+# uchun keyingi savolga o'tishdan oldingi minimal pauza - buni qo'shmasdan
+# ikkovi ham tezda javob bersa (yoki vaqt tugasa), keyingi savol darhol
+# translyatsiya qilinib, natija bir zumda almashtirilib ketardi.
+REVEAL_PAUSE_SECONDS = 1.5
 
 
 class _ActiveDuel:
@@ -147,6 +153,10 @@ async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_
             "opponent": _user_public(user_a),
         },
     )
+
+    # Ikkala klient ham mos 5 soniyalik "5,4,3,2,1" countdown ko'rsatadi -
+    # shu bilan sinxron turish uchun birinchi savol shu qadar kechiktiriladi.
+    await asyncio.sleep(PRE_GAME_COUNTDOWN_SECONDS)
 
     async with state.lock:
         await _advance_to_next_question(state)
@@ -298,6 +308,8 @@ async def _resolve_question(state: _ActiveDuel) -> None:
             "opponent_correct": a_correct,
         },
     )
+
+    await asyncio.sleep(REVEAL_PAUSE_SECONDS)
 
     if state.current_index + 1 < state.total_questions:
         await _advance_to_next_question(state)
