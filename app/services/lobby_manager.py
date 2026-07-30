@@ -25,9 +25,8 @@ SEND_TIMEOUT_SECONDS = 5
 PRE_GAME_COUNTDOWN_SECONDS = 5
 # Har savoldan keyin to'g'ri/noto'g'ri belgisi ekranda ko'rinib turishi
 # uchun keyingi savolga o'tishdan oldingi minimal pauza - buni qo'shmasdan
-# hamma tezda javob bersa (yoki vaqt tugasa), keyingi savol darhol
-# translyatsiya qilinib, so'nggi javob bergan ishtirokchining natijasi bir
-# zumda almashtirilib ketardi.
+# javob berilgan zahoti keyingi savol darhol translyatsiya qilinib, natija
+# bir zumda almashtirilib ketardi.
 REVEAL_PAUSE_SECONDS = 1.5
 
 
@@ -57,28 +56,30 @@ class _GameState:
         # o'yin boshlanganda kim ishtirok etgani (keyinroq chiqib ketsa ham standings'da qoladi)
         self.participant_user_ids = dict(participant_user_ids)  # participant_id -> user_id
 
-        self.current_index = -1
-        self.current_question_id: int | None = None
-        self.current_option_order: list[int] | None = None
-        self.current_correct_option: int | None = None
-        self.current_broadcast_at: datetime | None = None
-        self.used_question_ids: list[int] = []
+        # O'yin boshlanishida bir marta tanlab olinadi - barcha ishtirokchilar
+        # aynan bir xil savollarni, bir xil tartibda ko'radi (mustaqil
+        # tezlikda o'ynashsa ham natijalar adolatli solishtiriladi).
+        # Har bir element: {"question_text", "shuffled_options", "correct_option"}
+        self.questions: list[dict] = []
 
-        # participant_id -> har savol uchun bitta {"elapsed_ms", "is_correct"} yozuvi (Duel'dagi bilan bir xil
-        # granularity - ball formulasi har savolni alohida hisoblaydi, keyin jamlanadi)
+        # Har bir ishtirokchi o'zining mustaqil progressiga ega - endi hammasi
+        # raqiblarini kutmasdan o'z tezligida oldinga siljiydi.
+        self.participant_index: dict[str, int] = {pid: -1 for pid in participant_user_ids}
+        self.participant_sent_at: dict[str, datetime] = {}
+        self.participant_finished: dict[str, bool] = {pid: False for pid in participant_user_ids}
+        # Javob qayd etilgandan keyin, keyingi savolga o'tishdan oldingi 1.5s
+        # reveal-pauza paytida lock bo'shatiladi (aks holda boshqalar shu payt
+        # bloklanib qolardi) - shu oraliqda kelgan takroriy/kechikkan javobni
+        # ushlab qolish uchun.
+        self.participant_pending_advance: set[str] = set()
+        self.participant_timeout_task: dict[str, asyncio.Task] = {}
+
+        # participant_id -> har savol uchun bitta {"elapsed_ms", "is_correct"} yozuvi
         self.answers_log: dict[str, list[dict]] = {pid: [] for pid in participant_user_ids}
-        # joriy savol uchun kim javob berganini kuzatish
-        self.current_answered: set[str] = set()
 
-        self.timeout_task: asyncio.Task | None = None
         self.lock = asyncio.Lock()
-        # True o'yin yakunlanganini bildiradi. Kerak: oxirgi savol timeout
-        # bilan tugagan bir zumda, javob bermagan ishtirokchidan kechikkan
-        # javob kelsa - `submit_answer` game'ni lock olishdan OLDIN oladi;
-        # `_finish_game` lock ostida yakunlab, lockni bo'shatgach kechikkan
-        # javob lockni oladi. index/answered tekshiruvlari buni ushlamaydi,
-        # natijada bu bayroqsiz butun ikkinchi LobbyGame + dublikat natijalar
-        # + hammaga ikki barobar XP yozilib qolardi.
+        # Barcha ishtirokchilar barcha savollarini tugatgach True bo'ladi -
+        # `_finish_game` faqat bir marta chaqirilishini kafolatlaydi.
         self.finished = False
 
 
@@ -180,8 +181,9 @@ async def leave_room(room_id: str, participant_id: str) -> None:
     participant = room.participants.pop(participant_id)
 
     if participant.is_host:
-        if room.game and room.game.timeout_task:
-            room.game.timeout_task.cancel()
+        if room.game is not None:
+            for task in room.game.participant_timeout_task.values():
+                task.cancel()
         for p in list(room.participants.values()):
             await _safe_send(p.websocket, {"type": "lobby_closed", "room_id": room_id})
         _rooms.pop(room_id, None)
@@ -191,7 +193,7 @@ async def leave_room(room_id: str, participant_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 - sinxron ko'p o'yinchili viktorina
+# Phase 2 - mustaqil tezlikdagi ko'p o'yinchili viktorina
 # ---------------------------------------------------------------------------
 
 
@@ -253,8 +255,27 @@ async def start_game(
         actual_total = min(total_requested, available)
         category_summary = await _category_summary(db, category)
 
+        used_question_ids: list[int] = []
+        questions_data: list[dict] = []
+        for _ in range(actual_total):
+            question = await _pick_question(db, category_id, used_question_ids)
+            used_question_ids.append(question.id)
+
+            option_order = random.sample(range(len(question.options)), len(question.options))
+            shuffled_options = [question.options[j] for j in option_order]
+            correct_option = option_order.index(question.correct_option_index)
+
+            questions_data.append(
+                {
+                    "question_text": question.question_text,
+                    "shuffled_options": shuffled_options,
+                    "correct_option": correct_option,
+                }
+            )
+
     participant_user_ids = {pid: p.user.id for pid, p in room.participants.items()}
     room.game = _GameState(room_id, category_id, actual_total, participant_user_ids)
+    room.game.questions = questions_data
 
     await _broadcast(
         room,
@@ -271,128 +292,132 @@ async def start_game(
     await asyncio.sleep(PRE_GAME_COUNTDOWN_SECONDS)
 
     async with room.game.lock:
-        await _advance_to_next_question(room)
+        for pid in list(room.game.participant_user_ids):
+            await _send_question_to_participant(room, pid, 0)
 
 
-async def _advance_to_next_question(room: _Room) -> None:
+async def _send_question_to_participant(room: _Room, participant_id: str, index: int) -> None:
     game = room.game
-    game.current_index += 1
-    game.current_answered = set()
+    game.participant_index[participant_id] = index
+    game.participant_sent_at[participant_id] = datetime.now(timezone.utc)
+    q = game.questions[index]
 
-    async with AsyncSessionLocal() as db:
-        question = await _pick_question(db, game.category_id, game.used_question_ids)
-        game.used_question_ids.append(question.id)
-
-    option_order = random.sample(range(len(question.options)), len(question.options))
-    shuffled_options = [question.options[i] for i in option_order]
-
-    game.current_question_id = question.id
-    game.current_option_order = option_order
-    game.current_correct_option = option_order.index(question.correct_option_index)
-    game.current_broadcast_at = datetime.now(timezone.utc)
-
-    await _broadcast(
-        room,
-        {
-            "type": "lobby_question",
-            "room_id": room.room_id,
-            "question_index": game.current_index,
-            "question": {
-                "text": question.question_text,
-                "options": shuffled_options,
-                "time_limit_ms": QUESTION_TIME_LIMIT_MS,
+    participant = room.participants.get(participant_id)
+    if participant is not None:
+        await _safe_send(
+            participant.websocket,
+            {
+                "type": "lobby_question",
+                "room_id": room.room_id,
+                "question_index": index,
+                "question": {
+                    "text": q["question_text"],
+                    "options": q["shuffled_options"],
+                    "time_limit_ms": QUESTION_TIME_LIMIT_MS,
+                },
             },
-        },
+        )
+
+    old_task = game.participant_timeout_task.get(participant_id)
+    if old_task:
+        old_task.cancel()
+    game.participant_timeout_task[participant_id] = asyncio.create_task(
+        _participant_timeout(room, participant_id, index)
     )
 
-    if game.timeout_task:
-        game.timeout_task.cancel()
-    game.timeout_task = asyncio.create_task(_question_timeout(room, game.current_index))
 
-
-async def _question_timeout(room: _Room, question_index: int) -> None:
+async def _participant_timeout(room: _Room, participant_id: str, index: int) -> None:
     try:
         await asyncio.sleep(QUESTION_TIME_LIMIT_MS / 1000)
     except asyncio.CancelledError:
         return
-
-    game = room.game
-    if game is None:
+    if room.game is None:
         return
-    async with game.lock:
-        if game.current_index != question_index:
-            return
-        await _resolve_question(room)
+    await _process_participant_answer(room, participant_id, index, None)
 
 
-async def submit_answer(room_id: str, participant_id: str, question_index, selected_option, websocket: WebSocket) -> None:
+async def submit_answer(room_id: str, participant_id: str, question_index, selected_option) -> None:
     room = _rooms.get(room_id)
     if room is None or room.game is None or participant_id not in room.participants:
         return
-    game = room.game
     if not isinstance(question_index, int):
+        return
+    await _process_participant_answer(room, participant_id, question_index, selected_option)
+
+
+async def _process_participant_answer(
+    room: _Room, participant_id: str, question_index: int, selected_option
+) -> None:
+    game = room.game
+    if game is None:
         return
 
     async with game.lock:
         if game.finished:
-            return  # o'yin allaqachon yakunlangan (masalan oxirgi savol timeout bilan) - kechikkan javob e'tiborsiz
-        if question_index != game.current_index:
+            return  # o'yin allaqachon yakunlangan - kechikkan javob e'tiborsiz
+        if game.participant_finished.get(participant_id):
+            return
+        if participant_id in game.participant_pending_advance:
+            return  # bu savol uchun javob allaqachon qayd etilgan, reveal-pauza tugashini kutmoqda
+        if question_index != game.participant_index.get(participant_id):
             return  # eskirgan/xato javob - e'tiborga olinmaydi
-        if participant_id in game.current_answered:
-            return  # bitta ishtirokchidan bitta javobdan ortig'i e'tiborga olinmaydi
 
-        now = datetime.now(timezone.utc)
-        elapsed_ms = round((now - game.current_broadcast_at).total_seconds() * 1000)
-        is_correct = selected_option is not None and selected_option == game.current_correct_option
-
-        game.current_answered.add(participant_id)
-        game.answers_log[participant_id].append({"elapsed_ms": elapsed_ms, "is_correct": is_correct})
-
-        await websocket.send_json(
-            {
-                "type": "lobby_question_result",
-                "room_id": room_id,
-                "question_index": question_index,
-                "correct_option": game.current_correct_option,
-                "your_selected_option": selected_option,
-                "your_correct": is_correct,
-            }
-        )
-
-        answered_count = len(game.current_answered)
-        total_count = len(room.participants)
-        await _broadcast(
-            room,
-            {
-                "type": "lobby_answer_progress",
-                "room_id": room_id,
-                "question_index": question_index,
-                "answered_count": answered_count,
-                "total_count": total_count,
-            },
-        )
-
-        if answered_count >= total_count:
-            if game.timeout_task:
-                game.timeout_task.cancel()
-            await _resolve_question(room)
-
-
-async def _resolve_question(room: _Room) -> None:
-    game = room.game
-
-    # Javob bermagan ishtirokchilar (chiqib ketganlar ham) uchun "javobsiz" yozuv qo'shiladi -
-    # har kimning log uzunligi = shu paytgacha o'tgan savollar soniga teng bo'lib qoladi
-    for pid in game.participant_user_ids:
-        if pid not in game.current_answered:
-            game.answers_log[pid].append({"elapsed_ms": QUESTION_TIME_LIMIT_MS, "is_correct": False})
+        game.participant_pending_advance.add(participant_id)
+        await _handle_participant_finished_question(room, participant_id, question_index, selected_option)
 
     await asyncio.sleep(REVEAL_PAUSE_SECONDS)
 
-    if game.current_index + 1 < game.total_questions:
-        await _advance_to_next_question(room)
-    else:
-        await _finish_game(room)
+    async with game.lock:
+        game.participant_pending_advance.discard(participant_id)
+        if game.finished:
+            return
+
+        next_index = question_index + 1
+        if next_index < game.total_questions:
+            await _send_question_to_participant(room, participant_id, next_index)
+        else:
+            game.participant_finished[participant_id] = True
+            participant = room.participants.get(participant_id)
+            if participant is not None:
+                await _safe_send(participant.websocket, {"type": "lobby_waiting_for_others", "room_id": room.room_id})
+
+            if all(game.participant_finished.get(pid, False) for pid in game.participant_user_ids):
+                await _finish_game(room)
+
+
+async def _handle_participant_finished_question(
+    room: _Room, participant_id: str, index: int, selected_option
+) -> None:
+    """`game.lock` ostida chaqiriladi - shu bitta ishtirokchining javobini yozib, shaxsiy natijasini yuboradi."""
+    game = room.game
+    q = game.questions[index]
+    sent_at = game.participant_sent_at[participant_id]
+    now = datetime.now(timezone.utc)
+    elapsed_ms = round((now - sent_at).total_seconds() * 1000)
+    is_correct = selected_option is not None and selected_option == q["correct_option"]
+
+    task = game.participant_timeout_task.pop(participant_id, None)
+    # Agar shu funksiya aynan shu taymer vazifasi ichidan chaqirilgan bo'lsa (vaqt tugab),
+    # `task` bu holda joriy ishlayotgan vazifaning o'zi - uni bekor qilish keyingi
+    # `await`da o'z-o'zini CancelledError bilan to'xtatib qo'yardi.
+    if task is not None and task is not asyncio.current_task():
+        task.cancel()
+
+    game.answers_log[participant_id].append({"elapsed_ms": elapsed_ms, "is_correct": is_correct})
+
+    participant = room.participants.get(participant_id)
+    if participant is not None:
+        await _safe_send(
+            participant.websocket,
+            {
+                "type": "lobby_question_result",
+                "room_id": room.room_id,
+                "question_index": index,
+                "correct_option": q["correct_option"],
+                "your_selected_option": selected_option,
+                "your_correct": is_correct,
+            },
+        )
 
 
 def _score_for(game: _GameState, participant_id: str) -> tuple[int, int, int]:
@@ -405,8 +430,7 @@ def _score_for(game: _GameState, participant_id: str) -> tuple[int, int, int]:
 
 async def _finish_game(room: _Room) -> None:
     game = room.game
-    # Lock ostida (chaqiruvchilar orqali) - kechikkan javob o'yinni qayta
-    # yakunlab yuborishini oldini oladi, submit_answer'dagi tekshiruvga qarang.
+    # `game.lock` ostida (chaqiruvchi orqali) - ikkinchi marta chaqirilishining oldini oladi.
     game.finished = True
     now = datetime.now(timezone.utc)
 
@@ -422,6 +446,16 @@ async def _finish_game(room: _Room) -> None:
     ranks = {s["participant_id"]: i + 1 for i, s in enumerate(standings)}
     participant_count = len(game.participant_user_ids)
 
+    def _breakdown_for(pid: str) -> list[dict]:
+        return [
+            {
+                "order": i,
+                "question_text": game.questions[i]["question_text"],
+                "is_correct": game.answers_log[pid][i]["is_correct"],
+            }
+            for i in range(game.total_questions)
+        ]
+
     async with AsyncSessionLocal() as db:
         lobby_game = LobbyGame(
             category_id=game.category_id,
@@ -430,25 +464,6 @@ async def _finish_game(room: _Room) -> None:
         )
         db.add(lobby_game)
         await db.flush()  # lobby_game.id (server-generated) - keyingi FK yozuvlar uchun kerak
-
-        # `answers_log[pid][i]` va `used_question_ids[i]` bitta savol
-        # indeksiga mos keladi (ikkalasi ham har savol yakunlanganda bir
-        # vaqtda to'ldiriladi) - shu orqali har bir ishtirokchi uchun
-        # savol-bo'yicha to'g'ri/noto'g'ri ro'yxatini quramiz.
-        text_rows = await db.execute(
-            select(Question.id, Question.question_text).where(Question.id.in_(game.used_question_ids))
-        )
-        question_texts = dict(text_rows.all())
-
-        def _breakdown_for(pid: str) -> list[dict]:
-            return [
-                {
-                    "order": i,
-                    "question_text": question_texts.get(qid, ""),
-                    "is_correct": game.answers_log[pid][i]["is_correct"],
-                }
-                for i, qid in enumerate(game.used_question_ids)
-            ]
 
         for participant_id, user_id in game.participant_user_ids.items():
             correct, total_time_ms, ball = scores[participant_id]

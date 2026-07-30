@@ -322,6 +322,7 @@ async def delete_account(
     ).scalars().all()
     if own_duels:
         await _ensure_deleted_user_placeholder(db)
+        await db.flush()  # placeholder hisob bazaga yozilishini kafolatlaydi, duelga bog'lashdan oldin
         for duel in own_duels:
             if duel.user_a_id == user_id:
                 duel.user_a_id = DELETED_USER_ID

@@ -70,7 +70,6 @@ async def lobby_ws(websocket: WebSocket, token: str = Query(...)):
                     current_participant_id,
                     data.get("question_index"),
                     data.get("selected_option"),
-                    websocket,
                 )
 
             elif msg_type == "ping":

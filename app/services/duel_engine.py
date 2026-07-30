@@ -18,8 +18,8 @@ QUESTION_TIME_LIMIT_MS = 15000
 PRE_GAME_COUNTDOWN_SECONDS = 5
 # Har savoldan keyin to'g'ri/noto'g'ri belgisi ekranda ko'rinib turishi
 # uchun keyingi savolga o'tishdan oldingi minimal pauza - buni qo'shmasdan
-# ikkovi ham tezda javob bersa (yoki vaqt tugasa), keyingi savol darhol
-# translyatsiya qilinib, natija bir zumda almashtirilib ketardi.
+# javob berilgan zahoti keyingi savol darhol translyatsiya qilinib, natija
+# bir zumda almashtirilib ketardi.
 REVEAL_PAUSE_SECONDS = 1.5
 
 
@@ -30,22 +30,28 @@ class _ActiveDuel:
         self.user_b_id = user_b_id
         self.category_id = category_id
         self.total_questions = total_questions
-        self.current_index = -1
-        self.current_duel_question_id: int | None = None
-        self.current_correct_option: int | None = None
-        self.current_broadcast_at: datetime | None = None
-        self.answered_user_ids: set[str] = set()
-        self.used_question_ids: list[int] = []
-        self.timeout_task: asyncio.Task | None = None
+
+        # Duel boshlanishida bir marta tanlab olinadi - ikkala o'yinchi ham
+        # aynan bir xil savollarni, bir xil tartibda ko'radi (mustaqil
+        # tezlikda o'ynashsa ham natijalar adolatli solishtiriladi).
+        # Har bir element: {"duel_question_id", "question_text", "shuffled_options", "correct_option"}
+        self.questions: list[dict] = []
+
+        # Har bir user o'zining mustaqil progressiga ega - endi ikkovi ham
+        # raqibini kutmasdan o'z tezligida oldinga siljiydi.
+        self.user_index: dict[str, int] = {user_a_id: -1, user_b_id: -1}
+        self.user_sent_at: dict[str, datetime] = {}
+        self.user_finished: dict[str, bool] = {user_a_id: False, user_b_id: False}
+        # Javob qayd etilgandan keyin, keyingi savolga o'tishdan oldingi 1.5s
+        # reveal-pauza paytida lock bo'shatiladi (aks holda ikkinchi o'yinchi
+        # shu payt bloklanib qolardi) - shu oraliqda kelgan takroriy/kechikkan
+        # javobni ushlab qolish uchun.
+        self.user_pending_advance: set[str] = set()
+        self.user_timeout_task: dict[str, asyncio.Task] = {}
+
         self.lock = asyncio.Lock()
-        # True o'yin yakunlanganini bildiradi. Kerak: oxirgi savol timeout
-        # bilan tugagan bir zumda, javob bermagan o'yinchidan kechikkan javob
-        # kelsa - `submit_answer` state'ni lock olishdan OLDIN oladi, keyin
-        # lock kutadi; `_finish_duel` lock ostida yakunlab, lockni bo'shatgach
-        # kechikkan javob lockni oladi. current_index/answered tekshiruvlari
-        # bu holatni ushlamaydi (index hali oxirgi, o'yinchi javob bermagan),
-        # shuning uchun bu bayroqsiz duel qayta yakunlanib, XP ikki barobar
-        # yozilib qolardi.
+        # Ikkala o'yinchi ham barcha savollarini tugatgach True bo'ladi -
+        # `_finish_duel` faqat bir marta chaqirilishini kafolatlaydi.
         self.finished = False
 
 
@@ -59,6 +65,10 @@ _user_active_duel: dict[str, str] = {}
 
 def is_user_in_active_duel(user_id: str) -> bool:
     return user_id in _user_active_duel
+
+
+def _other_user_id(state: _ActiveDuel, user_id: str) -> str:
+    return state.user_b_id if user_id == state.user_a_id else state.user_a_id
 
 
 def _user_public(user: User) -> dict:
@@ -121,14 +131,48 @@ async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_
             status="in_progress",
         )
         db.add(duel)
+        await db.flush()  # duel.id kerak - DuelQuestion FK uchun
+
+        used_question_ids: list[int] = []
+        questions_data: list[dict] = []
+        dq_objects: list[DuelQuestion] = []
+        for i in range(actual_total):
+            question = await _pick_question(db, category_id, used_question_ids)
+            used_question_ids.append(question.id)
+
+            option_order = random.sample(range(len(question.options)), len(question.options))
+            shuffled_options = [question.options[j] for j in option_order]
+            correct_option = option_order.index(question.correct_option_index)
+
+            dq = DuelQuestion(
+                duel_id=duel.id,
+                question_id=question.id,
+                order=i,
+                option_order=option_order,
+                time_limit_ms=QUESTION_TIME_LIMIT_MS,
+            )
+            db.add(dq)
+            dq_objects.append(dq)
+            questions_data.append(
+                {
+                    "question_text": question.question_text,
+                    "shuffled_options": shuffled_options,
+                    "correct_option": correct_option,
+                }
+            )
+
+        await db.flush()  # dq.id larni to'ldirish uchun (autoincrement, FK sifatida keyin kerak)
+        for i, dq in enumerate(dq_objects):
+            questions_data[i]["duel_question_id"] = dq.id
+
         await db.commit()
-        await db.refresh(duel)
 
         user_a = await db.get(User, user_a_id)
         user_b = await db.get(User, user_b_id)
         category_summary = await _category_summary(db, category)
 
     state = _ActiveDuel(duel.id, user_a_id, user_b_id, category_id, actual_total)
+    state.questions = questions_data
     _active_duels[duel.id] = state
     _user_active_duel[user_a_id] = duel.id
     _user_active_duel[user_b_id] = duel.id
@@ -159,64 +203,50 @@ async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_
     await asyncio.sleep(PRE_GAME_COUNTDOWN_SECONDS)
 
     async with state.lock:
-        await _advance_to_next_question(state)
+        await _send_question_to_user(state, user_a_id, 0)
+        await _send_question_to_user(state, user_b_id, 0)
 
 
-async def _advance_to_next_question(state: _ActiveDuel) -> None:
-    state.current_index += 1
-    state.answered_user_ids = set()
+async def _send_question_to_user(state: _ActiveDuel, user_id: str, index: int) -> None:
+    state.user_index[user_id] = index
+    state.user_sent_at[user_id] = datetime.now(timezone.utc)
+    q = state.questions[index]
 
-    async with AsyncSessionLocal() as db:
-        question = await _pick_question(db, state.category_id, state.used_question_ids)
-        state.used_question_ids.append(question.id)
-
-        option_order = random.sample(range(len(question.options)), len(question.options))
-        shuffled_options = [question.options[i] for i in option_order]
-        correct_option = option_order.index(question.correct_option_index)
-
-        dq = DuelQuestion(
-            duel_id=state.duel_id,
-            question_id=question.id,
-            order=state.current_index,
-            option_order=option_order,
-            time_limit_ms=QUESTION_TIME_LIMIT_MS,
-        )
-        db.add(dq)
-        await db.commit()
-        await db.refresh(dq)
-
-    state.current_duel_question_id = dq.id
-    state.current_correct_option = correct_option
-    state.current_broadcast_at = dq.broadcast_at
-
-    message = {
-        "type": "duel_question",
-        "duel_id": state.duel_id,
-        "question_index": state.current_index,
-        "question": {
-            "text": question.question_text,
-            "options": shuffled_options,
-            "time_limit_ms": QUESTION_TIME_LIMIT_MS,
+    await manager.send_to_user(
+        user_id,
+        {
+            "type": "duel_question",
+            "duel_id": state.duel_id,
+            "question_index": index,
+            "question": {
+                "text": q["question_text"],
+                "options": q["shuffled_options"],
+                "time_limit_ms": QUESTION_TIME_LIMIT_MS,
+            },
         },
-    }
-    await manager.send_to_user(state.user_a_id, message)
-    await manager.send_to_user(state.user_b_id, message)
+    )
 
-    if state.timeout_task:
-        state.timeout_task.cancel()
-    state.timeout_task = asyncio.create_task(_question_timeout(state, state.current_index))
+    other_id = _other_user_id(state, user_id)
+    if not state.user_finished.get(other_id, False):
+        await manager.send_to_user(
+            other_id,
+            {"type": "duel_opponent_progress", "duel_id": state.duel_id, "opponent_question_index": index},
+        )
+
+    old_task = state.user_timeout_task.get(user_id)
+    if old_task:
+        old_task.cancel()
+    state.user_timeout_task[user_id] = asyncio.create_task(_user_timeout(state, user_id, index))
 
 
-async def _question_timeout(state: _ActiveDuel, question_index: int) -> None:
+async def _user_timeout(state: _ActiveDuel, user_id: str, index: int) -> None:
     try:
         await asyncio.sleep(QUESTION_TIME_LIMIT_MS / 1000)
     except asyncio.CancelledError:
         return
-
-    async with state.lock:
-        if state.current_index != question_index or state.duel_id not in _active_duels:
-            return
-        await _resolve_question(state)
+    if state.duel_id not in _active_duels:
+        return
+    await _process_user_answer(state, user_id, index, None)
 
 
 async def submit_answer(user_id: str, duel_id: str, question_index, selected_option) -> None:
@@ -225,101 +255,85 @@ async def submit_answer(user_id: str, duel_id: str, question_index, selected_opt
         return
     if not isinstance(question_index, int):
         return
+    await _process_user_answer(state, user_id, question_index, selected_option)
 
+
+async def _process_user_answer(state: _ActiveDuel, user_id: str, question_index: int, selected_option) -> None:
     async with state.lock:
         if state.finished:
-            return  # duel allaqachon yakunlangan (masalan oxirgi savol timeout bilan) - kechikkan javob e'tiborsiz
-        if question_index != state.current_index:
+            return  # duel allaqachon yakunlangan - kechikkan javob e'tiborsiz
+        if state.user_finished.get(user_id):
+            return
+        if user_id in state.user_pending_advance:
+            return  # bu savol uchun javob allaqachon qayd etilgan, reveal-pauza tugashini kutmoqda
+        if question_index != state.user_index.get(user_id):
             return  # eskirgan/xato javob - e'tiborga olinmaydi
-        if user_id in state.answered_user_ids:
-            return  # bitta o'yinchidan bitta javobdan ortig'i e'tiborga olinmaydi
 
-        now = datetime.now(timezone.utc)
-        elapsed_ms = round((now - state.current_broadcast_at).total_seconds() * 1000)
-        is_correct = selected_option is not None and selected_option == state.current_correct_option
-
-        async with AsyncSessionLocal() as db:
-            db.add(
-                DuelAnswer(
-                    duel_question_id=state.current_duel_question_id,
-                    user_id=user_id,
-                    selected_option=selected_option,
-                    is_correct=is_correct,
-                    answered_at=now,
-                    elapsed_ms=elapsed_ms,
-                )
-            )
-            await db.commit()
-
-        state.answered_user_ids.add(user_id)
-
-        other_user_id = state.user_b_id if user_id == state.user_a_id else state.user_a_id
-        if other_user_id not in state.answered_user_ids:
-            await manager.send_to_user(
-                other_user_id,
-                {"type": "duel_opponent_answered", "duel_id": duel_id, "question_index": question_index},
-            )
-        else:
-            if state.timeout_task:
-                state.timeout_task.cancel()
-            await _resolve_question(state)
-
-
-async def _resolve_question(state: _ActiveDuel) -> None:
-    duel_question_id = state.current_duel_question_id
-    correct_option = state.current_correct_option
-
-    async with AsyncSessionLocal() as db:
-        result = await db.execute(select(DuelAnswer).where(DuelAnswer.duel_question_id == duel_question_id))
-        answers_by_user = {a.user_id: a for a in result.scalars().all()}
-
-    def _get(uid: str):
-        a = answers_by_user.get(uid)
-        if a is None:
-            return None, False
-        return a.selected_option, a.is_correct
-
-    a_selected, a_correct = _get(state.user_a_id)
-    b_selected, b_correct = _get(state.user_b_id)
-
-    await manager.send_to_user(
-        state.user_a_id,
-        {
-            "type": "duel_question_result",
-            "duel_id": state.duel_id,
-            "question_index": state.current_index,
-            "correct_option": correct_option,
-            "your_selected_option": a_selected,
-            "your_correct": a_correct,
-            "opponent_selected_option": b_selected,
-            "opponent_correct": b_correct,
-        },
-    )
-    await manager.send_to_user(
-        state.user_b_id,
-        {
-            "type": "duel_question_result",
-            "duel_id": state.duel_id,
-            "question_index": state.current_index,
-            "correct_option": correct_option,
-            "your_selected_option": b_selected,
-            "your_correct": b_correct,
-            "opponent_selected_option": a_selected,
-            "opponent_correct": a_correct,
-        },
-    )
+        state.user_pending_advance.add(user_id)
+        await _handle_user_finished_question(state, user_id, question_index, selected_option)
 
     await asyncio.sleep(REVEAL_PAUSE_SECONDS)
 
-    if state.current_index + 1 < state.total_questions:
-        await _advance_to_next_question(state)
-    else:
-        await _finish_duel(state)
+    async with state.lock:
+        state.user_pending_advance.discard(user_id)
+        if state.finished:
+            return
+
+        next_index = question_index + 1
+        if next_index < state.total_questions:
+            await _send_question_to_user(state, user_id, next_index)
+        else:
+            state.user_finished[user_id] = True
+            other_id = _other_user_id(state, user_id)
+            if state.user_finished.get(other_id):
+                await _finish_duel(state)
+            else:
+                await manager.send_to_user(user_id, {"type": "duel_waiting_for_opponent", "duel_id": state.duel_id})
+
+
+async def _handle_user_finished_question(state: _ActiveDuel, user_id: str, index: int, selected_option) -> None:
+    """`state.lock` ostida chaqiriladi - shu bitta userning javobini yozib, shaxsiy natijasini yuboradi."""
+    q = state.questions[index]
+    sent_at = state.user_sent_at[user_id]
+    now = datetime.now(timezone.utc)
+    elapsed_ms = round((now - sent_at).total_seconds() * 1000)
+    is_correct = selected_option is not None and selected_option == q["correct_option"]
+
+    task = state.user_timeout_task.pop(user_id, None)
+    # Agar shu funksiya aynan shu taymer vazifasi ichidan chaqirilgan bo'lsa (vaqt tugab),
+    # `task` bu holda joriy ishlayotgan vazifaning o'zi - uni bekor qilish keyingi
+    # `await`da o'z-o'zini CancelledError bilan to'xtatib qo'yardi.
+    if task is not None and task is not asyncio.current_task():
+        task.cancel()
+
+    async with AsyncSessionLocal() as db:
+        db.add(
+            DuelAnswer(
+                duel_question_id=q["duel_question_id"],
+                user_id=user_id,
+                selected_option=selected_option,
+                is_correct=is_correct,
+                answered_at=now,
+                elapsed_ms=elapsed_ms,
+            )
+        )
+        await db.commit()
+
+    await manager.send_to_user(
+        user_id,
+        {
+            "type": "duel_question_result",
+            "duel_id": state.duel_id,
+            "question_index": index,
+            "correct_option": q["correct_option"],
+            "your_selected_option": selected_option,
+            "your_correct": is_correct,
+        },
+    )
 
 
 async def _finish_duel(state: _ActiveDuel) -> None:
-    # Lock ostida (chaqiruvchilar orqali) - kechikkan javob duelni qayta
-    # yakunlab yuborishini oldini oladi, submit_answer'dagi tekshiruvga qarang.
+    # `state.lock` ostida (chaqiruvchi orqali) - ikkinchi marta chaqirilishining oldini oladi.
     state.finished = True
 
     async with AsyncSessionLocal() as db:
