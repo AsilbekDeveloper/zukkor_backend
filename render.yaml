@@ -11,6 +11,8 @@ services:
           property: connectionString
       - key: SECRET_KEY
         generateValue: true
+      - key: ADMIN_SESSION_SECRET
+        generateValue: true
       - key: ALGORITHM
         value: HS256
       - key: ACCESS_TOKEN_EXPIRE_MINUTES
@@ -28,6 +30,20 @@ services:
       - key: R2_BUCKET
         sync: false
       - key: R2_PUBLIC_BASE_URL
+        sync: false
+      # Admin panel (SQLAdmin, /admin) - default yo'q, shu ikkalasi
+      # dashboard'da qo'lda kiritilmasa deploy butunlay ishga tushmaydi.
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      # Resend — parolni tiklash emaili uchun. Bo'sh qoldirilsa ham deploy
+      # ishga tushadi (RESEND_API_KEY default'i bor) - shunchaki forgot-
+      # password email jo'natmaydi, Resend hisobi sozlangach shu yerga
+      # qo'shiladi.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
         sync: false
 
 databases:

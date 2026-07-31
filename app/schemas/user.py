@@ -12,7 +12,9 @@ MAX_INTERESTS_COUNT = 30
 
 
 class PushTokenRequest(BaseModel):
-    token: str = Field(..., min_length=1)
+    # push_tokens.token ustuni VARCHAR(255) - undan uzun qiymat 400 o'rniga
+    # 500 DB xatosi berardi.
+    token: str = Field(..., min_length=1, max_length=255)
     platform: str = Field(..., min_length=1, max_length=20)
 
 

@@ -14,8 +14,13 @@ def _password_strength(v: str) -> str:
 MAX_PASSWORD_LEN = 72
 
 
+# users.email ustuni VARCHAR(255) - undan uzun qiymat 400 o'rniga 500 DB
+# xatosi berardi.
+MAX_EMAIL_LEN = 255
+
+
 class RegisterRequest(BaseModel):
-    email: EmailStr = Field(..., examples=["ali@example.com"])
+    email: EmailStr = Field(..., max_length=MAX_EMAIL_LEN, examples=["ali@example.com"])
     password: str = Field(..., min_length=8, max_length=MAX_PASSWORD_LEN, examples=["Parol1234"])
 
     @field_validator("password")
@@ -25,7 +30,7 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr = Field(..., examples=["ali@example.com"])
+    email: EmailStr = Field(..., max_length=MAX_EMAIL_LEN, examples=["ali@example.com"])
     password: str = Field(..., examples=["Parol1234"])
 
 
@@ -46,6 +51,28 @@ class RefreshRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str = Field(..., min_length=8, max_length=MAX_PASSWORD_LEN, examples=["YangiParol1234"])
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        return _password_strength(v)
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr = Field(..., max_length=MAX_EMAIL_LEN, examples=["ali@example.com"])
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr = Field(..., max_length=MAX_EMAIL_LEN, examples=["ali@example.com"])
+    code: str = Field(..., min_length=6, max_length=6, examples=["123456"])
+    new_password: str = Field(..., min_length=8, max_length=MAX_PASSWORD_LEN, examples=["YangiParol1234"])
+
+    @field_validator("code")
+    @classmethod
+    def code_numeric(cls, v: str) -> str:
+        if not v.isdigit():
+            raise ValueError("Kod faqat raqamlardan iborat bo'lishi kerak")
+        return v
 
     @field_validator("new_password")
     @classmethod

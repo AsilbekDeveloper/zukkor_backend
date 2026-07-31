@@ -255,6 +255,11 @@ async def submit_answer(user_id: str, duel_id: str, question_index, selected_opt
         return
     if not isinstance(question_index, int):
         return
+    # `selected_option` bazaga Integer ustunga yoziladi - klient noto'g'ri
+    # turdagi qiymat (masalan dict/list) yuborsa, tekshirmasdan o'tkazib
+    # yuborilsa DB darajasida (asyncpg) tur xatosi bilan connection yiqilardi.
+    if selected_option is not None and not isinstance(selected_option, int):
+        return
     await _process_user_answer(state, user_id, question_index, selected_option)
 
 

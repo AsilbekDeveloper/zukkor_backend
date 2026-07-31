@@ -5,6 +5,10 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     DATABASE_URL: str
     SECRET_KEY: str
+    # Admin panel (SQLAdmin) sessiya cookie'sini imzolash uchun alohida
+    # kalit - JWT imzolash bilan bitta SECRET_KEY'ni bo'lishmaslik uchun
+    # (ikkalasi turli maqsad, muammo bittasida ikkinchisiga tarqalmasin).
+    ADMIN_SESSION_SECRET: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
@@ -22,10 +26,18 @@ class Settings(BaseSettings):
     R2_PUBLIC_BASE_URL: str = ""
 
     # Admin panel (SQLAdmin, /admin) — kategoriya/savol boshqaruvi uchun.
-    # Bo'sh qoldirilmasin - Render environment variable orqali o'rnatiladi,
-    # kodga yozilmaydi.
-    ADMIN_USERNAME: str = ""
-    ADMIN_PASSWORD: str = ""
+    # Default yo'q (SECRET_KEY/DATABASE_URL kabi) — shu ikkalasi Render
+    # environment variable orqali o'rnatilmasa, ilova butunlay ishga
+    # tushmaydi, bo'sh qiymat bilan jim ishlab turmaydi.
+    ADMIN_USERNAME: str
+    ADMIN_PASSWORD: str
+
+    # Parolni tiklash kodlarini emailga yuborish uchun (Resend). Bo'sh
+    # bo'lsa ilova baribir ishga tushadi - shunday hollarda forgot-password
+    # email jo'natmasdan jim o'tkazib yuboradi (Resend hisobi hali
+    # sozlanmagan bo'lsa ham dev/deploy to'xtab qolmasin deb, R2 kabi).
+    RESEND_API_KEY: str = ""
+    RESEND_FROM_EMAIL: str = "Zukkor <onboarding@resend.dev>"
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

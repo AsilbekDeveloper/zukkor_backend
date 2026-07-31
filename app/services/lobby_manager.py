@@ -342,6 +342,11 @@ async def submit_answer(room_id: str, participant_id: str, question_index, selec
         return
     if not isinstance(question_index, int):
         return
+    # `selected_option` bazaga Integer ustunga yoziladi - klient noto'g'ri
+    # turdagi qiymat (masalan dict/list) yuborsa, tekshirmasdan o'tkazib
+    # yuborilsa DB darajasida (asyncpg) tur xatosi bilan connection yiqilardi.
+    if selected_option is not None and not isinstance(selected_option, int):
+        return
     await _process_participant_answer(room, participant_id, question_index, selected_option)
 
 

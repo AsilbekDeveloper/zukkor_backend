@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from sqlalchemy import func, select
 
 from app.core.database import AsyncSessionLocal
@@ -13,7 +13,7 @@ from app.models.user import User
 from app.services import duel_engine
 from app.services.display_name import display_name
 from app.services.push import send_push_to_user
-from app.services.ws_auth import authenticate_ws
+from app.services.ws_auth import authenticate_ws_connection
 from app.services.ws_manager import manager
 
 router = APIRouter()
@@ -77,7 +77,13 @@ async def _handle_duel_invite(user: User, data: dict, websocket: WebSocket) -> N
     category_id = data.get("category_id")
     question_count = data.get("question_count")  # ixtiyoriy; yuborilmasa duel boshlanganda standart son ishlatiladi
 
-    if not client_invite_id or not to_user_id or not category_id:
+    if (
+        not isinstance(client_invite_id, str)
+        or not client_invite_id
+        or not isinstance(to_user_id, str)
+        or not to_user_id
+        or not isinstance(category_id, int)
+    ):
         await websocket.send_json({"type": "error", "detail": "duel_invite: maydonlar to'liq emas"})
         return
 
@@ -149,7 +155,7 @@ async def _handle_duel_invite_respond(user: User, data: dict, websocket: WebSock
     invite_id = data.get("invite_id")
     accept = data.get("accept")
 
-    if not invite_id or not isinstance(accept, bool):
+    if not isinstance(invite_id, str) or not invite_id or not isinstance(accept, bool):
         await websocket.send_json({"type": "error", "detail": "duel_invite_respond: maydonlar to'liq emas"})
         return
 
@@ -213,13 +219,13 @@ async def expire_duel_invites_loop() -> None:
 
 
 @router.websocket("/duel")
-async def duel_ws(websocket: WebSocket, token: str = Query(...)):
-    user = await authenticate_ws(token)
+async def duel_ws(websocket: WebSocket):
+    await websocket.accept()
+    user = await authenticate_ws_connection(websocket)
     if user is None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    await websocket.accept()
     manager.connect(user.id, websocket)
 
     try:
@@ -233,9 +239,13 @@ async def duel_ws(websocket: WebSocket, token: str = Query(...)):
             elif msg_type == "duel_invite_respond":
                 await _handle_duel_invite_respond(user, data, websocket)
             elif msg_type == "duel_answer":
-                await duel_engine.submit_answer(
-                    user.id, data.get("duel_id"), data.get("question_index"), data.get("selected_option")
-                )
+                duel_id = data.get("duel_id")
+                if not isinstance(duel_id, str):
+                    await websocket.send_json({"type": "error", "detail": "duel_answer: duel_id noto'g'ri"})
+                else:
+                    await duel_engine.submit_answer(
+                        user.id, duel_id, data.get("question_index"), data.get("selected_option")
+                    )
             elif msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
             else:

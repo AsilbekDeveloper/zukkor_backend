@@ -17,6 +17,24 @@ router = APIRouter()
 
 MAX_AVATAR_SIZE_BYTES = 2 * 1024 * 1024  # 2MB
 ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
+_AVATAR_READ_CHUNK_BYTES = 256 * 1024
+
+
+async def _read_limited(upload: UploadFile, max_bytes: int) -> bytes:
+    # Hajm chegarasini butun faylni o'qib bo'lgandan KEYIN emas, o'qish
+    # jarayonida tekshiramiz - aks holda ataylab yuborilgan juda katta fayl
+    # chegaraga yetgunga qadar to'liq xotiraga tushib ulguradi (arzon DoS).
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await upload.read(_AVATAR_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rasm hajmi 2MB dan oshmasligi kerak")
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @router.get("/username-available", summary="Username bandligini tekshirish")
@@ -110,9 +128,7 @@ async def upload_avatar(
             detail="Faqat JPEG, PNG yoki WEBP formatidagi rasm qabul qilinadi",
         )
 
-    contents = await image.read()
-    if len(contents) > MAX_AVATAR_SIZE_BYTES:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Rasm hajmi 2MB dan oshmasligi kerak")
+    contents = await _read_limited(image, MAX_AVATAR_SIZE_BYTES)
 
     # Xom baytlarni saqlamaymiz — Pillow orqali qayta kodlaymiz (rasm ekanini
     # tekshiradi, EXIF/metadatani tozalaydi, o'lchamni chegaralaydi).

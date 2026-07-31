@@ -1,19 +1,18 @@
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from app.services import lobby_manager
-from app.services.ws_auth import authenticate_ws
+from app.services.ws_auth import authenticate_ws_connection
 
 router = APIRouter()
 
 
 @router.websocket("/lobby")
-async def lobby_ws(websocket: WebSocket, token: str = Query(...)):
-    user = await authenticate_ws(token)
+async def lobby_ws(websocket: WebSocket):
+    await websocket.accept()
+    user = await authenticate_ws_connection(websocket)
     if user is None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
-
-    await websocket.accept()
 
     current_room_id: str | None = None
     current_participant_id: str | None = None
@@ -38,7 +37,7 @@ async def lobby_ws(websocket: WebSocket, token: str = Query(...)):
                     )
                     continue
                 room_code = data.get("room_code")
-                if not room_code:
+                if not isinstance(room_code, str) or not room_code:
                     await websocket.send_json({"type": "error", "detail": "lobby_join: room_code kerak"})
                     continue
                 result = await lobby_manager.join_room(room_code, user, websocket)
@@ -55,7 +54,7 @@ async def lobby_ws(websocket: WebSocket, token: str = Query(...)):
                     await websocket.send_json({"type": "error", "detail": "Siz hech qanday xonada emassiz"})
                     continue
                 category_id = data.get("category_id")
-                if not category_id:
+                if not isinstance(category_id, int):
                     await websocket.send_json({"type": "error", "detail": "lobby_start: category_id kerak"})
                     continue
                 await lobby_manager.start_game(

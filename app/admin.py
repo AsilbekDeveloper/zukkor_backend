@@ -1,3 +1,5 @@
+import hmac
+
 from starlette.requests import Request
 from wtforms import SelectField, StringField
 from wtforms.validators import DataRequired
@@ -14,9 +16,15 @@ _OPTION_FIELD_NAMES = ["option_1", "option_2", "option_3", "option_4"]
 class AdminAuth(AuthenticationBackend):
     async def login(self, request: Request) -> bool:
         form = await request.form()
-        username = form.get("username")
-        password = form.get("password")
-        if username == settings.ADMIN_USERNAME and password == settings.ADMIN_PASSWORD:
+        username = form.get("username") or ""
+        password = form.get("password") or ""
+        # hmac.compare_digest - oddiy `==` solishtirish satr uzunligi/mos
+        # belgilar soniga qarab bir oz farqli vaqt sarflaydi, bu nazariy
+        # jihatdan parolni belgi-belgilab topishga (timing attack) imkon
+        # beradi.
+        username_ok = hmac.compare_digest(username, settings.ADMIN_USERNAME)
+        password_ok = hmac.compare_digest(password, settings.ADMIN_PASSWORD)
+        if username_ok and password_ok:
             request.session.update({"admin_authenticated": True})
             return True
         return False

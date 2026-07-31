@@ -51,10 +51,17 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+# Hech qanday brauzerda ochiladigan web-frontend yo'q (faqat Flutter mobil
+# ilova + /admin) - mobil ilova brauzer CORS siyosatiga umuman bog'liq
+# emas, shuning uchun `allow_origins=["*"]` mobil ilova uchun xavfsiz.
+# `allow_credentials=False` esa /admin sessiya cookie'sini cross-origin
+# so'rovlardan himoya qiladi (`*` + credentials=True kombinatsiyasi
+# Starlette'da so'ragan domenni echo qilib, cookie asosidagi so'rovlarga
+# yo'l ochib qo'yardi).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -73,7 +80,9 @@ app.include_router(lobby_ws.router, prefix="/ws", tags=["Lobby WebSocket"])
 # Avatar rasmlari — autentifikatsiyasiz, ochiq (Flutter Image.network() to'g'ridan-to'g'ri shu manzildan yuklaydi)
 app.mount("/media", StaticFiles(directory="media"), name="media")
 
-admin = Admin(app, engine, authentication_backend=AdminAuth(secret_key=settings.SECRET_KEY), title="Zukkor Admin")
+admin = Admin(
+    app, engine, authentication_backend=AdminAuth(secret_key=settings.ADMIN_SESSION_SECRET), title="Zukkor Admin"
+)
 admin.add_view(CategoryAdmin)
 admin.add_view(QuestionAdmin)
 
