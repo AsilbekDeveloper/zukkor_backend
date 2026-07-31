@@ -32,13 +32,6 @@ class Settings(BaseSettings):
     ADMIN_USERNAME: str
     ADMIN_PASSWORD: str
 
-    # Parolni tiklash kodlarini emailga yuborish uchun (Resend). Bo'sh
-    # bo'lsa ilova baribir ishga tushadi - shunday hollarda forgot-password
-    # email jo'natmasdan jim o'tkazib yuboradi (Resend hisobi hali
-    # sozlanmagan bo'lsa ham dev/deploy to'xtab qolmasin deb, R2 kabi).
-    RESEND_API_KEY: str = ""
-    RESEND_FROM_EMAIL: str = "Zukkor <onboarding@resend.dev>"
-
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("DATABASE_URL")

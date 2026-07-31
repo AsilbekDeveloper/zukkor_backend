@@ -37,14 +37,6 @@ services:
         sync: false
       - key: ADMIN_PASSWORD
         sync: false
-      # Resend — parolni tiklash emaili uchun. Bo'sh qoldirilsa ham deploy
-      # ishga tushadi (RESEND_API_KEY default'i bor) - shunchaki forgot-
-      # password email jo'natmaydi, Resend hisobi sozlangach shu yerga
-      # qo'shiladi.
-      - key: RESEND_API_KEY
-        sync: false
-      - key: RESEND_FROM_EMAIL
-        sync: false
 
 databases:
   - name: zukkor-db

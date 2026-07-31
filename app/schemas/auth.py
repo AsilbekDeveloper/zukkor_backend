@@ -58,28 +58,6 @@ class ChangePasswordRequest(BaseModel):
         return _password_strength(v)
 
 
-class ForgotPasswordRequest(BaseModel):
-    email: EmailStr = Field(..., max_length=MAX_EMAIL_LEN, examples=["ali@example.com"])
-
-
-class ResetPasswordRequest(BaseModel):
-    email: EmailStr = Field(..., max_length=MAX_EMAIL_LEN, examples=["ali@example.com"])
-    code: str = Field(..., min_length=6, max_length=6, examples=["123456"])
-    new_password: str = Field(..., min_length=8, max_length=MAX_PASSWORD_LEN, examples=["YangiParol1234"])
-
-    @field_validator("code")
-    @classmethod
-    def code_numeric(cls, v: str) -> str:
-        if not v.isdigit():
-            raise ValueError("Kod faqat raqamlardan iborat bo'lishi kerak")
-        return v
-
-    @field_validator("new_password")
-    @classmethod
-    def password_strength(cls, v: str) -> str:
-        return _password_strength(v)
-
-
 class DeleteAccountRequest(BaseModel):
     # Google-only hisoblarda parol umuman yo'q (hashed_password None) -
     # bunday hisob uchun bu maydon talab qilinmaydi, tekshiruv shunga
