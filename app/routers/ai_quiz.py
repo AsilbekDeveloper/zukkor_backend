@@ -9,7 +9,7 @@ from app.dependencies.auth import get_current_user
 from app.models.quiz import Category, Question
 from app.models.user import User
 from app.schemas.ai_quiz import AiQuizOut
-from app.services.ai_quiz_generation import QuizGenerationError, generate_questions, research_topic
+from app.services.ai_quiz_generation import QuizGenerationError, generate_questions, generate_questions_from_topic
 from app.services.document_text import UnsupportedDocumentError, extract_text
 
 router = APIRouter()
@@ -104,8 +104,7 @@ async def generate_ai_quiz(
         title = (file.filename or "AI Quiz").rsplit(".", 1)[0][:50] or "AI Quiz"
     else:
         try:
-            researched_text = await research_topic(topic_clean)
-            questions = await generate_questions(researched_text, topic_clean, question_count)
+            questions = await generate_questions_from_topic(topic_clean, question_count)
         except QuizGenerationError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 

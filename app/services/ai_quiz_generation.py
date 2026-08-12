@@ -1,5 +1,5 @@
-"""Foydalanuvchi yuklagan hujjat matnidan Gemini orqali quiz savollari
-generatsiya qilish."""
+"""Foydalanuvchi yuklagan hujjat matnidan yoki mavzudan Gemini Interactions
+API orqali quiz savollari generatsiya qilish."""
 
 import json
 import logging
@@ -10,25 +10,29 @@ from app.core.config import settings
 
 logger = logging.getLogger("zukkor.ai_quiz")
 
-# 2026-08-12: gemini-2.0-flash Google tomonidan 2026-06-01'da to'xtatilgan
-# (retired) - production'da 502 xatosiga sabab bo'lgan. gemini-2.5-flash'ga
-# o'tkazildi - GA'dan beri (2025-06) barqaror, hali deprecation e'lon
-# qilinmagan.
-_GEMINI_MODEL = "gemini-2.5-flash"
-_GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{_GEMINI_MODEL}:generateContent"
+# 2026-08-12: eski `generateContent` endpoint (gemini-2.0-flash, keyin
+# gemini-2.5-flash) yangi API kalitlar/loyihalar uchun butunlay yopilgan
+# ("no longer available to new users") - Google buni yangi Interactions
+# API'ga almashtirgan. gemini-3.6-flash - hozirgi barqaror (GA) va yangi
+# foydalanuvchilarga ochiq model.
+_GEMINI_MODEL = "gemini-3.6-flash"
+_INTERACTIONS_API_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
 # Juda uzun hujjat (masalan butun kitob) uchun ham xarajat/vaqtni chegaralash -
 # bu miqdor odatiy kitoblarning katta qismini qamrab oladi.
 _MAX_SOURCE_TEXT_CHARS = 200_000
 
+# Interactions API standart JSON Schema (kichik harfli type nomlari)
+# ishlatadi - eski generateContent'ning ARRAY/OBJECT/STRING kabi
+# Gemini-ga xos katta harfli shaklidan farqli.
 _RESPONSE_SCHEMA = {
-    "type": "ARRAY",
+    "type": "array",
     "items": {
-        "type": "OBJECT",
+        "type": "object",
         "properties": {
-            "question_text": {"type": "STRING"},
-            "options": {"type": "ARRAY", "items": {"type": "STRING"}},
-            "correct_option_index": {"type": "INTEGER"},
+            "question_text": {"type": "string"},
+            "options": {"type": "array", "items": {"type": "string"}},
+            "correct_option_index": {"type": "integer"},
         },
         "required": ["question_text", "options", "correct_option_index"],
     },
@@ -50,91 +54,30 @@ def _extract_gemini_error_message(response: httpx.Response) -> str | None:
     return str(message)[:300] if message else None
 
 
-async def research_topic(topic: str) -> str:
-    """Mavzu bo'yicha Google qidiruvi orqali (grounding) faktik matn yig'ib beradi.
-
-    Gemini API'da qidiruv grounding'i bilan structured JSON chiqishini (response_schema)
-    bir so'rovda birga ishlatib bo'lmaydi, shuning uchun bu alohida, oddiy matn
-    qaytaradigan bosqich - natijasi keyin generate_questions()'ga hujjat matni
-    o'rnida beriladi.
-    """
+async def _call_gemini(prompt: str, *, use_search: bool) -> str:
     if not settings.GEMINI_API_KEY:
         raise QuizGenerationError("AI xizmati hozircha sozlanmagan")
 
-    prompt = (
-        "Internetdan qidirib, quyidagi mavzu bo'yicha test (viktorina) savollari "
-        "tuzish uchun yetarlicha bo'lgan aniq, faktik ma'lumot to'plang va batafsil "
-        "matn shaklida yozing (ro'yxat, sana, raqam va faktlarni saqlab qoling). "
-        "Mavzu qaysi tilda yozilgan bo'lsa, javobni o'sha tilda yozing.\n\n"
-        f"Mavzu: {topic}"
-    )
-
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "tools": [{"google_search": {}}],
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=90) as client:
-            response = await client.post(
-                _GEMINI_API_URL,
-                params={"key": settings.GEMINI_API_KEY},
-                json=payload,
-            )
-    except httpx.HTTPError as exc:
-        logger.exception("Gemini'ga (qidiruv) so'rov yuborishda xatolik")
-        raise QuizGenerationError("AI xizmatiga ulanib bo'lmadi") from exc
-
-    if response.status_code >= 300:
-        logger.error("Gemini (qidiruv) xato qaytardi: %s %s", response.status_code, response.text)
-        detail = _extract_gemini_error_message(response)
-        raise QuizGenerationError(
-            f"Mavzu bo'yicha ma'lumot topib bo'lmadi ({detail})" if detail else "Mavzu bo'yicha ma'lumot topib bo'lmadi"
-        )
-
-    try:
-        data = response.json()
-        researched_text = data["candidates"][0]["content"]["parts"][0]["text"]
-    except (KeyError, IndexError, ValueError) as exc:
-        logger.exception("Gemini (qidiruv) javobini o'qib bo'lmadi")
-        raise QuizGenerationError("AI javobini qayta ishlab bo'lmadi") from exc
-
-    if not researched_text.strip():
-        raise QuizGenerationError("Mavzu bo'yicha ma'lumot topib bo'lmadi")
-    return researched_text
-
-
-async def generate_questions(text: str, instruction: str, question_count: int) -> list[dict]:
-    if not settings.GEMINI_API_KEY:
-        raise QuizGenerationError("AI xizmati hozircha sozlanmagan")
-
-    truncated = text[:_MAX_SOURCE_TEXT_CHARS]
-    instruction_line = f"Foydalanuvchi ko'rsatmasi: {instruction}\n" if instruction.strip() else ""
-    prompt = (
-        "Siz aqlli o'quv yordamchisiz. Quyidagi hujjat matni asosida test (viktorina) "
-        "savollari tayyorlang.\n\n"
-        f"{instruction_line}"
-        f"Savollar soni: aynan {question_count} ta.\n\n"
-        "Har bir savol uchun aynan 4 ta javob varianti bering, ulardan faqat bittasi "
-        "to'g'ri bo'lsin. Savol va variantlarni hujjat matni qaysi tilda bo'lsa, o'sha "
-        "tilda yozing. Foydalanuvchi ko'rsatmasida aytilmagan mavzulardan savol "
-        "tuzmang.\n\n"
-        f"Hujjat matni:\n{truncated}"
-    )
-
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "response_mime_type": "application/json",
-            "response_schema": _RESPONSE_SCHEMA,
+    payload: dict = {
+        "model": _GEMINI_MODEL,
+        "input": prompt,
+        "response_format": {
+            "type": "text",
+            "mime_type": "application/json",
+            "schema": _RESPONSE_SCHEMA,
         },
     }
+    # Interactions API'da (eski generateContent'dan farqli) qidiruv
+    # grounding'i va structured JSON chiqishini bitta so'rovda birga
+    # ishlatish mumkin.
+    if use_search:
+        payload["tools"] = [{"type": "google_search"}]
 
     try:
         async with httpx.AsyncClient(timeout=90) as client:
             response = await client.post(
-                _GEMINI_API_URL,
-                params={"key": settings.GEMINI_API_KEY},
+                _INTERACTIONS_API_URL,
+                headers={"x-goog-api-key": settings.GEMINI_API_KEY},
                 json=payload,
             )
     except httpx.HTTPError as exc:
@@ -148,9 +91,24 @@ async def generate_questions(text: str, instruction: str, question_count: int) -
 
     try:
         data = response.json()
-        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+        raw_text = next(
+            content["text"]
+            for step in data["steps"]
+            if step.get("type") == "model_output"
+            for content in step["content"]
+            if content.get("type") == "text"
+        )
+    except (KeyError, StopIteration, ValueError) as exc:
+        logger.exception("Gemini javobini o'qib bo'lmadi")
+        raise QuizGenerationError("AI javobini qayta ishlab bo'lmadi") from exc
+
+    return raw_text
+
+
+def _parse_and_validate(raw_text: str) -> list[dict]:
+    try:
         raw_questions = json.loads(raw_text)
-    except (KeyError, IndexError, ValueError) as exc:
+    except ValueError as exc:
         logger.exception("Gemini javobini o'qib bo'lmadi")
         raise QuizGenerationError("AI javobini qayta ishlab bo'lmadi") from exc
 
@@ -160,6 +118,42 @@ async def generate_questions(text: str, instruction: str, question_count: int) -
             "AI yaroqli savollar tayyorlay olmadi - boshqa hujjat yoki ko'rsatma bilan urinib ko'ring"
         )
     return validated
+
+
+async def generate_questions(text: str, instruction: str, question_count: int) -> list[dict]:
+    truncated = text[:_MAX_SOURCE_TEXT_CHARS]
+    instruction_line = f"Foydalanuvchi ko'rsatmasi: {instruction}\n" if instruction.strip() else ""
+    prompt = (
+        "Siz aqlli o'quv yordamchisiz. Quyidagi hujjat matni asosida test (viktorina) "
+        "savollari tayyorlang.\n\n"
+        f"{instruction_line}"
+        f"Savollar soni: aynan {question_count} ta.\n\n"
+        "Har bir savol uchun aynan 4 ta javob varianti bering, ulardan faqat bittasi "
+        "to'g'ri bo'lsin. Savol va variantlarni hujjat matni qaysi tilda bo'lsa, o'sha "
+        "tilda yozing. Foydalanuvchi ko'rsatmasida aytilmagan mavzulardan savol "
+        "tuzmang.\n\n"
+        f"Hujjat matni:\n{truncated}"
+    )
+    raw_text = await _call_gemini(prompt, use_search=False)
+    return _parse_and_validate(raw_text)
+
+
+async def generate_questions_from_topic(topic: str, question_count: int) -> list[dict]:
+    """Mavzu bo'yicha - hech qanday hujjatsiz - Google qidiruvi (grounding)
+    orqali internetdan faktik ma'lumot topib, shundan savollar tayyorlaydi.
+    """
+    prompt = (
+        "Siz aqlli o'quv yordamchisiz. Internetdan qidirib, quyidagi mavzu "
+        "bo'yicha aniq, faktik ma'lumotlarga asoslangan test (viktorina) "
+        "savollari tayyorlang.\n\n"
+        f"Mavzu: {topic}\n"
+        f"Savollar soni: aynan {question_count} ta.\n\n"
+        "Har bir savol uchun aynan 4 ta javob varianti bering, ulardan faqat bittasi "
+        "to'g'ri bo'lsin. Savol va variantlarni mavzu qaysi tilda yozilgan bo'lsa, "
+        "o'sha tilda yozing."
+    )
+    raw_text = await _call_gemini(prompt, use_search=True)
+    return _parse_and_validate(raw_text)
 
 
 def _validate_questions(raw_questions) -> list[dict]:

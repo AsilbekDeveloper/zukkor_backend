@@ -24,8 +24,8 @@ async def _fake_generate_questions(text, instruction, question_count):
     return FAKE_QUESTIONS[:question_count]
 
 
-async def _fake_research_topic(topic):
-    return f"{topic} haqida internetdan yig'ilgan faktlar"
+async def _fake_generate_questions_from_topic(topic, question_count):
+    return FAKE_QUESTIONS[:question_count]
 
 
 def _upload(filename: str, content: bytes) -> UploadFile:
@@ -86,11 +86,11 @@ async def test_generate_questions_fails_fast_without_api_key():
 
 
 @pytest.mark.anyio
-async def test_research_topic_fails_fast_without_api_key():
-    from app.services.ai_quiz_generation import research_topic
+async def test_generate_questions_from_topic_fails_fast_without_api_key():
+    from app.services.ai_quiz_generation import generate_questions_from_topic
 
     with pytest.raises(QuizGenerationError):
-        await research_topic("2-jahon tarixi")
+        await generate_questions_from_topic("2-jahon tarixi", 5)
 
 
 # --- router: generate/list/delete ---
@@ -141,7 +141,7 @@ async def test_generate_ai_quiz_instruction_is_optional_with_file(db_session, mo
 @pytest.mark.anyio
 async def test_generate_ai_quiz_topic_only_uses_web_search(db_session, monkeypatch):
     monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
-    monkeypatch.setattr("app.routers.ai_quiz.research_topic", _fake_research_topic)
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions_from_topic", _fake_generate_questions_from_topic)
     user = await _create_user(db_session)
 
     result = await generate_ai_quiz(
