@@ -11,7 +11,19 @@ from sqladmin import Admin
 from app.admin import AdminAuth, CategoryAdmin, QuestionAdmin
 from app.core.config import settings
 from app.core.database import Base, engine
-from app.routers import auth, categories, duel_ws, friends, history, leaderboard, lobby_ws, notifications, quiz, users
+from app.routers import (
+    ai_quiz,
+    auth,
+    categories,
+    duel_ws,
+    friends,
+    history,
+    leaderboard,
+    lobby_ws,
+    notifications,
+    quiz,
+    users,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -70,6 +82,7 @@ app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(categories.router, prefix="/categories", tags=["Categories"])
 app.include_router(quiz.router, prefix="/quiz", tags=["Quiz"])
+app.include_router(ai_quiz.router, prefix="/ai-quiz", tags=["AI Quiz"])
 app.include_router(leaderboard.router, prefix="/leaderboard", tags=["Leaderboard"])
 app.include_router(history.router, prefix="/history", tags=["History"])
 app.include_router(friends.router, prefix="/friends", tags=["Friends"])

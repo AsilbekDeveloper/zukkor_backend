@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     ADMIN_USERNAME: str
     ADMIN_PASSWORD: str
 
+    # Gemini — foydalanuvchi yuklagan hujjatdan AI orqali quiz generatsiya
+    # qilish uchun. Bo'sh bo'lsa ilova baribir ishga tushadi - shunday
+    # holda /ai-quiz/generate xizmat mavjud emasligi haqida xato qaytaradi.
+    GEMINI_API_KEY: str = ""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("DATABASE_URL")

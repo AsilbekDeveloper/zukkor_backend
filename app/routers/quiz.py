@@ -54,7 +54,14 @@ async def start_quiz(
     db: AsyncSession = Depends(get_db),
 ):
     category = await db.get(Category, data.category_id)
-    if category is None or not category.is_active:
+    # Shaxsiy (AI orqali generatsiya qilingan) kategoriya bo'lsa, faqat
+    # egasi o'ynay oladi - aks holda category_id'ni taxmin qilib, boshqa
+    # foydalanuvchining shaxsiy quiz matnini o'qib olish mumkin bo'lardi.
+    if (
+        category is None
+        or not category.is_active
+        or (category.owner_user_id is not None and category.owner_user_id != current_user.id)
+    ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kategoriya topilmadi")
 
     one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)

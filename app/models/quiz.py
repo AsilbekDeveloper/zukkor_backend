@@ -17,6 +17,15 @@ class Category(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # NULL - hammaga ochiq, admin boshqaradigan global kategoriya (GET
+    # /categories shu turdagilarni qaytaradi). Bo'lsa - AI orqali shu
+    # foydalanuvchi uchun generatsiya qilingan shaxsiy quiz, faqat egasiga
+    # ko'rinadi (GET /categories'dan chiqarib tashlanadi).
+    owner_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
 
 class Question(Base):
     __tablename__ = "questions"

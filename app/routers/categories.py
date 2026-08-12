@@ -21,7 +21,11 @@ async def list_categories(db: AsyncSession = Depends(get_db)):
     stmt = (
         select(Category, func.coalesce(question_count_subq.c.cnt, 0))
         .outerjoin(question_count_subq, question_count_subq.c.category_id == Category.id)
-        .where(Category.is_active.is_(True))
+        # AI orqali generatsiya qilingan shaxsiy kategoriyalar (owner_user_id
+        # bor) bu yerga chiqmasligi kerak - ular faqat egasiga
+        # GET /ai-quiz orqali ko'rinadi, aks holda hamma foydalanuvchining
+        # shaxsiy quiz kontenti umumiy ro'yxatga sizib chiqardi.
+        .where(Category.is_active.is_(True), Category.owner_user_id.is_(None))
         .order_by(Category.sort_order)
     )
 
