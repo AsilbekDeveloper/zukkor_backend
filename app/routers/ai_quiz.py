@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,7 +9,7 @@ from app.dependencies.auth import get_current_user
 from app.models.quiz import Category, Question
 from app.models.user import User
 from app.schemas.ai_quiz import AiQuizOut
-from app.services.ai_quiz_generation import QuizGenerationError, generate_questions
+from app.services.ai_quiz_generation import QuizGenerationError, generate_questions, research_topic
 from app.services.document_text import UnsupportedDocumentError, extract_text
 
 router = APIRouter()
@@ -19,6 +19,7 @@ _UPLOAD_READ_CHUNK_BYTES = 256 * 1024
 DAILY_GENERATION_LIMIT = 5
 DEFAULT_QUESTION_COUNT = 10
 MAX_QUESTION_COUNT = 20
+MAX_TOPIC_LENGTH = 300
 
 
 async def _read_limited(upload: UploadFile, max_bytes: int) -> bytes:
@@ -55,13 +56,23 @@ def _question_count_subquery():
     summary="Hujjatdan AI orqali quiz yaratish",
 )
 async def generate_ai_quiz(
-    file: UploadFile,
-    instruction: str = Form(...),
+    file: UploadFile | None = File(None),
+    instruction: str | None = Form(None),
+    topic: str | None = Form(None),
     question_count: int = Form(DEFAULT_QUESTION_COUNT),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     question_count = max(1, min(question_count, MAX_QUESTION_COUNT))
+    instruction_clean = (instruction or "").strip()
+    topic_clean = (topic or "").strip()[:MAX_TOPIC_LENGTH]
+    has_file = file is not None and bool(file.filename)
+
+    if not has_file and not topic_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Hujjat yuklang yoki mavzu kiriting",
+        )
 
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     count_result = await db.execute(
@@ -75,22 +86,30 @@ async def generate_ai_quiz(
             detail=f"Kunlik limit tugadi - kuniga {DAILY_GENERATION_LIMIT} marta generatsiya qilish mumkin",
         )
 
-    contents = await _read_limited(file, MAX_UPLOAD_SIZE_BYTES)
+    if has_file:
+        assert file is not None
+        contents = await _read_limited(file, MAX_UPLOAD_SIZE_BYTES)
+        try:
+            text = extract_text(file.filename or "", contents)
+        except UnsupportedDocumentError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        if not text.strip():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Hujjatdan matn topilmadi")
 
-    try:
-        text = extract_text(file.filename or "", contents)
-    except UnsupportedDocumentError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        try:
+            questions = await generate_questions(text, instruction_clean, question_count)
+        except QuizGenerationError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
-    if not text.strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Hujjatdan matn topilmadi")
+        title = (file.filename or "AI Quiz").rsplit(".", 1)[0][:50] or "AI Quiz"
+    else:
+        try:
+            researched_text = await research_topic(topic_clean)
+            questions = await generate_questions(researched_text, topic_clean, question_count)
+        except QuizGenerationError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
-    try:
-        questions = await generate_questions(text, instruction, question_count)
-    except QuizGenerationError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
-
-    title = (file.filename or "AI Quiz").rsplit(".", 1)[0][:50] or "AI Quiz"
+        title = topic_clean[:50] or "AI Quiz"
 
     category = Category(
         name=title,

@@ -24,6 +24,10 @@ async def _fake_generate_questions(text, instruction, question_count):
     return FAKE_QUESTIONS[:question_count]
 
 
+async def _fake_research_topic(topic):
+    return f"{topic} haqida internetdan yig'ilgan faktlar"
+
+
 def _upload(filename: str, content: bytes) -> UploadFile:
     return UploadFile(file=io.BytesIO(content), filename=filename)
 
@@ -81,6 +85,14 @@ async def test_generate_questions_fails_fast_without_api_key():
         await generate_questions("matn", "5 ta savol", 5)
 
 
+@pytest.mark.anyio
+async def test_research_topic_fails_fast_without_api_key():
+    from app.services.ai_quiz_generation import research_topic
+
+    with pytest.raises(QuizGenerationError):
+        await research_topic("2-jahon tarixi")
+
+
 # --- router: generate/list/delete ---
 
 
@@ -92,6 +104,7 @@ async def test_generate_ai_quiz_creates_private_category(db_session, monkeypatch
     result = await generate_ai_quiz(
         file=_upload("kitob.txt", b"kitobning matni"),
         instruction="hammasidan 2 ta savol",
+        topic=None,
         question_count=2,
         current_user=user,
         db=db_session,
@@ -110,6 +123,61 @@ async def test_generate_ai_quiz_creates_private_category(db_session, monkeypatch
 
 
 @pytest.mark.anyio
+async def test_generate_ai_quiz_instruction_is_optional_with_file(db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
+    user = await _create_user(db_session)
+
+    result = await generate_ai_quiz(
+        file=_upload("kitob.txt", b"kitobning matni"),
+        instruction=None,
+        topic=None,
+        question_count=2,
+        current_user=user,
+        db=db_session,
+    )
+    assert result.question_count == 2
+
+
+@pytest.mark.anyio
+async def test_generate_ai_quiz_topic_only_uses_web_search(db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
+    monkeypatch.setattr("app.routers.ai_quiz.research_topic", _fake_research_topic)
+    user = await _create_user(db_session)
+
+    result = await generate_ai_quiz(
+        file=None,
+        instruction=None,
+        topic="2-jahon tarixidan savollar, o'rtacha qiyinchilik",
+        question_count=2,
+        current_user=user,
+        db=db_session,
+    )
+
+    assert result.question_count == 2
+    assert result.name == "2-jahon tarixidan savollar, o'rtacha qiyinchilik"
+
+    category = await db_session.get(Category, result.id)
+    assert category.owner_user_id == user.id
+
+
+@pytest.mark.anyio
+async def test_generate_ai_quiz_rejects_when_neither_file_nor_topic_given(db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
+    user = await _create_user(db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await generate_ai_quiz(
+            file=None,
+            instruction=None,
+            topic=None,
+            question_count=2,
+            current_user=user,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.anyio
 async def test_generate_ai_quiz_rejects_unsupported_file(db_session, monkeypatch):
     monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
     user = await _create_user(db_session)
@@ -118,6 +186,7 @@ async def test_generate_ai_quiz_rejects_unsupported_file(db_session, monkeypatch
         await generate_ai_quiz(
             file=_upload("virus.exe", b"whatever"),
             instruction="savollar",
+            topic=None,
             question_count=2,
             current_user=user,
             db=db_session,
@@ -134,6 +203,7 @@ async def test_generate_ai_quiz_enforces_daily_limit(db_session, monkeypatch):
         await generate_ai_quiz(
             file=_upload("kitob.txt", b"matn"),
             instruction="2 ta savol",
+            topic=None,
             question_count=2,
             current_user=user,
             db=db_session,
@@ -143,6 +213,7 @@ async def test_generate_ai_quiz_enforces_daily_limit(db_session, monkeypatch):
         await generate_ai_quiz(
             file=_upload("kitob.txt", b"matn"),
             instruction="2 ta savol",
+            topic=None,
             question_count=2,
             current_user=user,
             db=db_session,
@@ -157,10 +228,20 @@ async def test_list_my_ai_quizzes_only_returns_own_active_quizzes(db_session, mo
     user_b = await _create_user(db_session, "b@example.com")
 
     await generate_ai_quiz(
-        file=_upload("a-kitob.txt", b"matn"), instruction="x", question_count=2, current_user=user_a, db=db_session
+        file=_upload("a-kitob.txt", b"matn"),
+        instruction="x",
+        topic=None,
+        question_count=2,
+        current_user=user_a,
+        db=db_session,
     )
     await generate_ai_quiz(
-        file=_upload("b-kitob.txt", b"matn"), instruction="x", question_count=2, current_user=user_b, db=db_session
+        file=_upload("b-kitob.txt", b"matn"),
+        instruction="x",
+        topic=None,
+        question_count=2,
+        current_user=user_b,
+        db=db_session,
     )
 
     result = await list_my_ai_quizzes(current_user=user_a, db=db_session)
@@ -175,7 +256,12 @@ async def test_delete_ai_quiz_soft_deletes_and_is_owner_only(db_session, monkeyp
     other = await _create_user(db_session, "other@example.com")
 
     created = await generate_ai_quiz(
-        file=_upload("kitob.txt", b"matn"), instruction="x", question_count=2, current_user=owner, db=db_session
+        file=_upload("kitob.txt", b"matn"),
+        instruction="x",
+        topic=None,
+        question_count=2,
+        current_user=owner,
+        db=db_session,
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -198,7 +284,12 @@ async def test_other_user_cannot_start_quiz_on_someone_elses_private_category(db
     other = await _create_user(db_session, "other2@example.com")
 
     created = await generate_ai_quiz(
-        file=_upload("kitob.txt", b"matn"), instruction="x", question_count=2, current_user=owner, db=db_session
+        file=_upload("kitob.txt", b"matn"),
+        instruction="x",
+        topic=None,
+        question_count=2,
+        current_user=owner,
+        db=db_session,
     )
 
     with pytest.raises(HTTPException) as exc_info:
@@ -219,7 +310,12 @@ async def test_private_ai_categories_never_appear_in_public_categories_list(db_s
 
     db_session.add(Category(name="Math", icon_name="calculator", color_key="coral", is_active=True))
     await generate_ai_quiz(
-        file=_upload("kitob.txt", b"matn"), instruction="x", question_count=2, current_user=user, db=db_session
+        file=_upload("kitob.txt", b"matn"),
+        instruction="x",
+        topic=None,
+        question_count=2,
+        current_user=user,
+        db=db_session,
     )
 
     public_categories = await list_categories(db=db_session)
