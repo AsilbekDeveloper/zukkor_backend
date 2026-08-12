@@ -39,6 +39,17 @@ class QuizGenerationError(Exception):
     """AI orqali quiz generatsiya qilib bo'lmadi (sozlanmagan, tarmoq xatosi, yoki natija yaroqsiz)."""
 
 
+def _extract_gemini_error_message(response: httpx.Response) -> str | None:
+    # Gemini xato javobi odatda {"error": {"code":..., "message":..., "status":...}}
+    # shaklida keladi - buni foydalanuvchiga ko'rsatilsa, muammoni tezroq
+    # aniqlash mumkin (masalan "model not found" yoki kvota tugashi).
+    try:
+        message = response.json()["error"]["message"]
+    except (KeyError, ValueError, TypeError):
+        return None
+    return str(message)[:300] if message else None
+
+
 async def research_topic(topic: str) -> str:
     """Mavzu bo'yicha Google qidiruvi orqali (grounding) faktik matn yig'ib beradi.
 
@@ -76,7 +87,10 @@ async def research_topic(topic: str) -> str:
 
     if response.status_code >= 300:
         logger.error("Gemini (qidiruv) xato qaytardi: %s %s", response.status_code, response.text)
-        raise QuizGenerationError("Mavzu bo'yicha ma'lumot topib bo'lmadi")
+        detail = _extract_gemini_error_message(response)
+        raise QuizGenerationError(
+            f"Mavzu bo'yicha ma'lumot topib bo'lmadi ({detail})" if detail else "Mavzu bo'yicha ma'lumot topib bo'lmadi"
+        )
 
     try:
         data = response.json()
@@ -129,7 +143,8 @@ async def generate_questions(text: str, instruction: str, question_count: int) -
 
     if response.status_code >= 300:
         logger.error("Gemini xato qaytardi: %s %s", response.status_code, response.text)
-        raise QuizGenerationError("AI savollarni tayyorlay olmadi")
+        detail = _extract_gemini_error_message(response)
+        raise QuizGenerationError(f"AI savollarni tayyorlay olmadi ({detail})" if detail else "AI savollarni tayyorlay olmadi")
 
     try:
         data = response.json()
