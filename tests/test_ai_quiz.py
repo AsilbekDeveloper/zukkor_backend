@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.core.security import hash_password
 from app.models.quiz import Category, Question
 from app.models.user import User
-from app.routers.ai_quiz import DAILY_GENERATION_LIMIT, delete_ai_quiz, generate_ai_quiz, list_my_ai_quizzes
+from app.routers.ai_quiz import delete_ai_quiz, generate_ai_quiz, list_my_ai_quizzes
 from app.routers.categories import list_categories
 from app.routers.quiz import start_quiz
 from app.schemas.quiz import QuizStartRequest
@@ -194,31 +194,6 @@ async def test_generate_ai_quiz_rejects_unsupported_file(db_session, monkeypatch
     assert exc_info.value.status_code == 400
 
 
-@pytest.mark.anyio
-async def test_generate_ai_quiz_enforces_daily_limit(db_session, monkeypatch):
-    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
-    user = await _create_user(db_session)
-
-    for _ in range(DAILY_GENERATION_LIMIT):
-        await generate_ai_quiz(
-            file=_upload("kitob.txt", b"matn"),
-            instruction="2 ta savol",
-            topic=None,
-            question_count=2,
-            current_user=user,
-            db=db_session,
-        )
-
-    with pytest.raises(HTTPException) as exc_info:
-        await generate_ai_quiz(
-            file=_upload("kitob.txt", b"matn"),
-            instruction="2 ta savol",
-            topic=None,
-            question_count=2,
-            current_user=user,
-            db=db_session,
-        )
-    assert exc_info.value.status_code == 429
 
 
 @pytest.mark.anyio

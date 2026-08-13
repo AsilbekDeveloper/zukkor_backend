@@ -1,5 +1,3 @@
-from datetime import datetime, timezone
-
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +14,6 @@ router = APIRouter()
 
 MAX_UPLOAD_SIZE_BYTES = 15 * 1024 * 1024  # 15MB - kitob uchun yetarli
 _UPLOAD_READ_CHUNK_BYTES = 256 * 1024
-DAILY_GENERATION_LIMIT = 5
 DEFAULT_QUESTION_COUNT = 10
 MAX_QUESTION_COUNT = 20
 MAX_TOPIC_LENGTH = 300
@@ -72,18 +69,6 @@ async def generate_ai_quiz(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Hujjat yuklang yoki mavzu kiriting",
-        )
-
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    count_result = await db.execute(
-        select(func.count())
-        .select_from(Category)
-        .where(Category.owner_user_id == current_user.id, Category.created_at >= today_start)
-    )
-    if count_result.scalar_one() >= DAILY_GENERATION_LIMIT:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Kunlik limit tugadi - kuniga {DAILY_GENERATION_LIMIT} marta generatsiya qilish mumkin",
         )
 
     if has_file:
