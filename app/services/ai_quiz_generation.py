@@ -139,20 +139,26 @@ async def generate_questions(text: str, instruction: str, question_count: int) -
 
 
 async def generate_questions_from_topic(topic: str, question_count: int) -> list[dict]:
-    """Mavzu bo'yicha - hech qanday hujjatsiz - Google qidiruvi (grounding)
-    orqali internetdan faktik ma'lumot topib, shundan savollar tayyorlaydi.
+    """Mavzu bo'yicha - hech qanday hujjatsiz - AI'ning o'z bilimidan
+    foydalanib savollar tayyorlaydi.
+
+    Google qidiruvi (grounding) ATAYLAB ishlatilmaydi - u Gemini'da alohida
+    "prepay" balans (haqiqiy pul, Cloud billing'dan mustaqil) talab qiladi.
+    Grounding'siz chaqiruv esa odatda bepul kvota doirasida qoladi. Agar
+    kelajakda grounding kerak bo'lsa, `_call_gemini(prompt, use_search=True)`
+    ga qaytarish yetarli - qolgan struktura (schema, validatsiya) o'zgarmaydi.
     """
     prompt = (
-        "Siz aqlli o'quv yordamchisiz. Internetdan qidirib, quyidagi mavzu "
-        "bo'yicha aniq, faktik ma'lumotlarga asoslangan test (viktorina) "
-        "savollari tayyorlang.\n\n"
+        "Siz aqlli o'quv yordamchisiz. Quyidagi mavzu bo'yicha aniq, "
+        "faktik ma'lumotlarga asoslangan test (viktorina) savollari "
+        "tayyorlang.\n\n"
         f"Mavzu: {topic}\n"
         f"Savollar soni: aynan {question_count} ta.\n\n"
         "Har bir savol uchun aynan 4 ta javob varianti bering, ulardan faqat bittasi "
         "to'g'ri bo'lsin. Savol va variantlarni mavzu qaysi tilda yozilgan bo'lsa, "
         "o'sha tilda yozing."
     )
-    raw_text = await _call_gemini(prompt, use_search=True)
+    raw_text = await _call_gemini(prompt, use_search=False)
     return _parse_and_validate(raw_text)
 
 
