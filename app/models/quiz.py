@@ -26,6 +26,12 @@ class Category(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    def __str__(self) -> str:
+        # SQLAdmin'ning bog'liq obyekt tanlagichi (masalan "New Savol"
+        # formasidagi Category dropdown) buni chaqiradi - bo'lmasa xom
+        # "<app.models.quiz.Category object at 0x...>" ko'rsatadi.
+        return self.name
+
 
 class Question(Base):
     __tablename__ = "questions"
