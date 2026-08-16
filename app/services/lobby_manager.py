@@ -13,6 +13,7 @@ from app.models.lobby_game import LobbyGame, LobbyGameResult
 from app.models.quiz import Category, Question
 from app.models.user import User
 from app.models.xp_event import XpEvent
+from app.services.quiz_access import can_access_category
 from app.services.scoring import calculate_ball
 from app.services.streak import update_streak
 
@@ -236,9 +237,15 @@ async def start_game(
 
     total_requested = question_count or DEFAULT_TOTAL_QUESTIONS
 
+    host_user_id = room.participants[host_participant_id].user.id
+
     async with AsyncSessionLocal() as db:
         category = await db.get(Category, category_id)
-        if category is None or not category.is_active:
+        if (
+            category is None
+            or not category.is_active
+            or not await can_access_category(db, host_user_id, category)
+        ):
             await websocket.send_json({"type": "error", "detail": "Kategoriya topilmadi"})
             return
 

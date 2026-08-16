@@ -7,9 +7,17 @@ from sqlalchemy import select
 from app.core.security import hash_password
 from app.models.quiz import Category, Question
 from app.models.user import User
-from app.routers.ai_quiz import delete_ai_quiz, generate_ai_quiz, list_my_ai_quizzes
+from app.routers.ai_quiz import (
+    create_manual_quiz,
+    delete_ai_quiz,
+    generate_ai_quiz,
+    list_my_ai_quizzes,
+    list_user_quizzes,
+    update_quiz_visibility,
+)
 from app.routers.categories import list_categories
 from app.routers.quiz import start_quiz
+from app.schemas.ai_quiz import ManualQuestionIn, ManualQuizCreate, VisibilityUpdate
 from app.schemas.quiz import QuizStartRequest
 from app.services.ai_quiz_generation import QuizGenerationError, _validate_questions
 from app.services.document_text import UnsupportedDocumentError, extract_text
@@ -296,3 +304,121 @@ async def test_private_ai_categories_never_appear_in_public_categories_list(db_s
     public_categories = await list_categories(db=db_session)
     assert len(public_categories) == 1
     assert public_categories[0].name == "Math"
+
+
+# --- manual quiz creation ---
+
+
+def _manual_payload(name="Qo'lda quiz", count=2):
+    return ManualQuizCreate(
+        name=name,
+        questions=[
+            ManualQuestionIn(question_text=f"Savol {i}?", options=["a", "b", "c", "d"], correct_option_index=0)
+            for i in range(count)
+        ],
+    )
+
+
+@pytest.mark.anyio
+async def test_create_manual_quiz_creates_private_category(db_session):
+    user = await _create_user(db_session)
+
+    result = await create_manual_quiz(payload=_manual_payload(), current_user=user, db=db_session)
+
+    assert result.question_count == 2
+    assert result.source == "manual"
+    assert result.visibility == "private"
+
+    category = await db_session.get(Category, result.id)
+    assert category.owner_user_id == user.id
+
+
+@pytest.mark.anyio
+async def test_create_manual_quiz_rejects_malformed_questions(db_session):
+    user = await _create_user(db_session)
+    payload = ManualQuizCreate(
+        name="Yaroqsiz",
+        questions=[ManualQuestionIn(question_text="", options=["a", "b", "c"], correct_option_index=0)],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_manual_quiz(payload=payload, current_user=user, db=db_session)
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_create_manual_quiz_rejects_blank_name(db_session):
+    user = await _create_user(db_session)
+    payload = _manual_payload(name="   ")
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_manual_quiz(payload=payload, current_user=user, db=db_session)
+    assert exc_info.value.status_code == 400
+
+
+# --- visibility updates ---
+
+
+@pytest.mark.anyio
+async def test_update_quiz_visibility_changes_it(db_session):
+    user = await _create_user(db_session)
+    created = await create_manual_quiz(payload=_manual_payload(), current_user=user, db=db_session)
+
+    updated = await update_quiz_visibility(
+        quiz_id=created.id, payload=VisibilityUpdate(visibility="public"), current_user=user, db=db_session
+    )
+    assert updated.visibility == "public"
+
+
+@pytest.mark.anyio
+async def test_update_quiz_visibility_rejects_non_owner(db_session):
+    owner = await _create_user(db_session, "owner_v@example.com")
+    other = await _create_user(db_session, "other_v@example.com")
+    created = await create_manual_quiz(payload=_manual_payload(), current_user=owner, db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_quiz_visibility(
+            quiz_id=created.id, payload=VisibilityUpdate(visibility="public"), current_user=other, db=db_session
+        )
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_update_quiz_visibility_rejects_invalid_value(db_session):
+    user = await _create_user(db_session)
+    created = await create_manual_quiz(payload=_manual_payload(), current_user=user, db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_quiz_visibility(
+            quiz_id=created.id, payload=VisibilityUpdate(visibility="everyone"), current_user=user, db=db_session
+        )
+    assert exc_info.value.status_code == 400
+
+
+# --- GET /ai-quiz/users/{user_id} ---
+
+
+@pytest.mark.anyio
+async def test_list_user_quizzes_shows_only_public_to_strangers(db_session):
+    owner = await _create_user(db_session, "owner_u1@example.com")
+    stranger = await _create_user(db_session, "stranger_u1@example.com")
+
+    public_quiz = await create_manual_quiz(payload=_manual_payload("Ommaviy"), current_user=owner, db=db_session)
+    await update_quiz_visibility(
+        quiz_id=public_quiz.id, payload=VisibilityUpdate(visibility="public"), current_user=owner, db=db_session
+    )
+    await create_manual_quiz(payload=_manual_payload("Shaxsiy"), current_user=owner, db=db_session)
+
+    result = await list_user_quizzes(user_id=owner.id, current_user=stranger, db=db_session)
+    assert len(result) == 1
+    assert result[0].name == "Ommaviy"
+
+
+@pytest.mark.anyio
+async def test_list_user_quizzes_owner_sees_everything_on_own_page(db_session):
+    owner = await _create_user(db_session, "owner_u2@example.com")
+    await create_manual_quiz(payload=_manual_payload("A"), current_user=owner, db=db_session)
+    await create_manual_quiz(payload=_manual_payload("B"), current_user=owner, db=db_session)
+
+    result = await list_user_quizzes(user_id=owner.id, current_user=owner, db=db_session)
+    assert len(result) == 2

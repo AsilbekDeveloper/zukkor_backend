@@ -13,6 +13,7 @@ from app.models.user import User
 from app.services import duel_engine
 from app.services.display_name import display_name
 from app.services.push import send_push_to_user
+from app.services.quiz_access import can_access_category
 from app.services.ws_auth import authenticate_ws_connection
 from app.services.ws_manager import manager
 
@@ -106,7 +107,11 @@ async def _handle_duel_invite(user: User, data: dict, websocket: WebSocket) -> N
             return
 
         category = await db.get(Category, category_id)
-        if category is None or not category.is_active:
+        if (
+            category is None
+            or not category.is_active
+            or not await can_access_category(db, user.id, category)
+        ):
             await websocket.send_json(
                 {"type": "error", "detail": "Kategoriya topilmadi", "client_invite_id": client_invite_id}
             )

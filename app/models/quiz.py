@@ -18,13 +18,23 @@ class Category(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # NULL - hammaga ochiq, admin boshqaradigan global kategoriya (GET
-    # /categories shu turdagilarni qaytaradi). Bo'lsa - AI orqali shu
-    # foydalanuvchi uchun generatsiya qilingan shaxsiy quiz, faqat egasiga
-    # ko'rinadi (GET /categories'dan chiqarib tashlanadi).
+    # /categories shu turdagilarni qaytaradi). Bo'lsa - shu foydalanuvchi
+    # tomonidan yaratilgan (AI yoki qo'lda) shaxsiy quiz - kimga
+    # ko'rinishi `visibility` bilan boshqariladi.
     owner_user_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # Faqat owner_user_id borlarga daxldor (global kategoriyalarda e'tiborga
+    # olinmaydi - ularga har doim hamma kira oladi). 'private' - faqat egasi,
+    # 'friends' - egasi + uning do'stlari (Friendship jadvali orqali),
+    # 'public' - hamma. Egasi buni istalgan payt o'zgartira oladi.
+    visibility: Mapped[str] = mapped_column(String(10), default="private")
+
+    # Bu quiz qanday yaratilgani - profilda AI/qo'lda belgisini ko'rsatish
+    # uchun. Global kategoriyalarda 'admin'.
+    source: Mapped[str] = mapped_column(String(20), default="admin")
 
     def __str__(self) -> str:
         # SQLAdmin'ning bog'liq obyekt tanlagichi (masalan "New Savol"

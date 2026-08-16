@@ -6,9 +6,10 @@ from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.quiz import Category, Question
 from app.models.user import User
-from app.schemas.ai_quiz import AiQuizOut
-from app.services.ai_quiz_generation import QuizGenerationError, generate_questions, generate_questions_from_topic
+from app.schemas.ai_quiz import AiQuizOut, ManualQuizCreate, VisibilityUpdate
+from app.services.ai_quiz_generation import QuizGenerationError, _validate_questions, generate_questions, generate_questions_from_topic
 from app.services.document_text import UnsupportedDocumentError, extract_text
+from app.services.quiz_access import can_access_category, is_friend
 
 router = APIRouter()
 
@@ -17,6 +18,7 @@ _UPLOAD_READ_CHUNK_BYTES = 256 * 1024
 DEFAULT_QUESTION_COUNT = 10
 MAX_QUESTION_COUNT = 20
 MAX_TOPIC_LENGTH = 300
+VALID_VISIBILITIES = {"private", "friends", "public"}
 
 
 async def _read_limited(upload: UploadFile, max_bytes: int) -> bytes:
@@ -87,6 +89,7 @@ async def generate_ai_quiz(
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
         title = (file.filename or "AI Quiz").rsplit(".", 1)[0][:50] or "AI Quiz"
+        source = "ai_document"
     else:
         try:
             questions = await generate_questions_from_topic(topic_clean, question_count)
@@ -94,6 +97,7 @@ async def generate_ai_quiz(
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
         title = topic_clean[:50] or "AI Quiz"
+        source = "ai_topic"
 
     category = Category(
         name=title,
@@ -101,6 +105,8 @@ async def generate_ai_quiz(
         color_key="coral",
         is_active=True,
         owner_user_id=current_user.id,
+        source=source,
+        visibility="private",
     )
     db.add(category)
     await db.flush()
@@ -123,6 +129,94 @@ async def generate_ai_quiz(
         name=category.name,
         question_count=len(questions),
         created_at=category.created_at.isoformat(),
+        source=category.source,
+        visibility=category.visibility,
+    )
+
+
+@router.post(
+    "/manual",
+    response_model=AiQuizOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Qo'lda quiz yaratish",
+)
+async def create_manual_quiz(
+    payload: ManualQuizCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    name = payload.name.strip()[:50]
+    if not name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Quiz nomini kiriting")
+
+    raw_questions = [q.model_dump() for q in payload.questions[:MAX_QUESTION_COUNT]]
+    validated = _validate_questions(raw_questions)
+    if not validated:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Kamida bitta to'g'ri to'ldirilgan savol kerak")
+
+    category = Category(
+        name=name,
+        icon_name="sparkle",
+        color_key="coral",
+        is_active=True,
+        owner_user_id=current_user.id,
+        source="manual",
+        visibility="private",
+    )
+    db.add(category)
+    await db.flush()
+
+    for q in validated:
+        db.add(
+            Question(
+                category_id=category.id,
+                question_text=q["question_text"],
+                options=q["options"],
+                correct_option_index=q["correct_option_index"],
+                is_active=True,
+            )
+        )
+    await db.commit()
+    await db.refresh(category)
+
+    return AiQuizOut(
+        id=category.id,
+        name=category.name,
+        question_count=len(validated),
+        created_at=category.created_at.isoformat(),
+        source=category.source,
+        visibility=category.visibility,
+    )
+
+
+@router.patch("/{quiz_id}/visibility", response_model=AiQuizOut, summary="Quiz ko'rinishini o'zgartirish")
+async def update_quiz_visibility(
+    quiz_id: int,
+    payload: VisibilityUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if payload.visibility not in VALID_VISIBILITIES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Noto'g'ri ko'rinish qiymati")
+
+    category = await db.get(Category, quiz_id)
+    if category is None or category.owner_user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topilmadi")
+
+    category.visibility = payload.visibility
+    await db.commit()
+    await db.refresh(category)
+
+    question_count_result = await db.execute(
+        select(func.count()).select_from(Question).where(Question.category_id == category.id, Question.is_active.is_(True))
+    )
+    return AiQuizOut(
+        id=category.id,
+        name=category.name,
+        question_count=question_count_result.scalar_one(),
+        created_at=category.created_at.isoformat(),
+        source=category.source,
+        visibility=category.visibility,
     )
 
 
@@ -140,7 +234,58 @@ async def list_my_ai_quizzes(
     )
     result = await db.execute(stmt)
     return [
-        AiQuizOut(id=category.id, name=category.name, question_count=question_count, created_at=category.created_at.isoformat())
+        AiQuizOut(
+            id=category.id,
+            name=category.name,
+            question_count=question_count,
+            created_at=category.created_at.isoformat(),
+            source=category.source,
+            visibility=category.visibility,
+        )
+        for category, question_count in result.all()
+    ]
+
+
+@router.get("/users/{user_id}", response_model=list[AiQuizOut], summary="Boshqa foydalanuvchining ko'rinadigan quizlari")
+async def list_user_quizzes(
+    user_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    target = await db.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Foydalanuvchi topilmadi")
+
+    if user_id == current_user.id:
+        # O'zining sahifasi - visibility'dan qat'iy nazar hammasini ko'radi
+        # (list_my_ai_quizzes bilan bir xil natija, boshqa profil ekranida
+        # ham ishlatilaveradi deb).
+        allowed_visibilities: list[str] | None = None
+    elif await is_friend(db, current_user.id, user_id):
+        allowed_visibilities = ["public", "friends"]
+    else:
+        allowed_visibilities = ["public"]
+
+    question_count_subq = _question_count_subquery()
+    stmt = (
+        select(Category, func.coalesce(question_count_subq.c.cnt, 0))
+        .outerjoin(question_count_subq, question_count_subq.c.category_id == Category.id)
+        .where(Category.owner_user_id == user_id, Category.is_active.is_(True))
+        .order_by(Category.created_at.desc())
+    )
+    if allowed_visibilities is not None:
+        stmt = stmt.where(Category.visibility.in_(allowed_visibilities))
+
+    result = await db.execute(stmt)
+    return [
+        AiQuizOut(
+            id=category.id,
+            name=category.name,
+            question_count=question_count,
+            created_at=category.created_at.isoformat(),
+            source=category.source,
+            visibility=category.visibility,
+        )
         for category, question_count in result.all()
     ]
 
