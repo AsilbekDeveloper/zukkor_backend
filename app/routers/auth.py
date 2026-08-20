@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from firebase_admin import auth as firebase_auth
 from firebase_admin import exceptions as firebase_exceptions
 from sqlalchemy import delete, or_, select, update
@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.limiter import limiter
 from app.core.security import (
     DUMMY_PASSWORD_HASH,
     create_access_token,
@@ -50,7 +51,8 @@ router = APIRouter()
     summary="Ro'yxatdan o'tish",
     description="Yangi foydalanuvchi yaratadi va access + refresh token qaytaradi.",
 )
-async def register(data: RegisterRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("5/hour")
+async def register(request: Request, data: RegisterRequest, db: AsyncSession = Depends(get_db)):
     existing_email = await db.execute(select(User).where(User.email == data.email))
     if existing_email.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bu email allaqachon ro'yxatdan o'tgan")
@@ -88,7 +90,8 @@ async def register(data: RegisterRequest, db: AsyncSession = Depends(get_db)):
     summary="Kirish",
     description="Email va parol bilan tizimga kiradi. Access + refresh token qaytaradi.",
 )
-async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("10/minute")
+async def login(request: Request, data: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == data.email))
     user = result.scalar_one_or_none()
 
@@ -123,7 +126,8 @@ async def login(data: LoginRequest, db: AsyncSession = Depends(get_db)):
     summary="Google orqali kirish",
     description="Google ID tokenni tekshiradi, foydalanuvchini topadi yoki yaratadi, access + refresh token qaytaradi.",
 )
-async def google_auth(data: GoogleAuthRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("20/minute")
+async def google_auth(request: Request, data: GoogleAuthRequest, db: AsyncSession = Depends(get_db)):
     app = get_firebase_app()
     if app is None:
         raise HTTPException(
@@ -175,7 +179,8 @@ async def google_auth(data: GoogleAuthRequest, db: AsyncSession = Depends(get_db
     summary="Tokenni yangilash",
     description="Muddati o'tmagan refresh token bilan yangi access + refresh token oladi (token rotation).",
 )
-async def refresh_tokens(data: RefreshRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("30/minute")
+async def refresh_tokens(request: Request, data: RefreshRequest, db: AsyncSession = Depends(get_db)):
     try:
         payload = decode_token(data.refresh_token)
         if payload.get("type") != "refresh":

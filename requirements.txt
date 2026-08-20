@@ -18,3 +18,4 @@ itsdangerous==2.2.0
 httpx==0.28.1
 pypdf==6.10.2
 python-docx==1.2.0
+slowapi==0.1.10

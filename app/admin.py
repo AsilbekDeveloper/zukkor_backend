@@ -1,4 +1,6 @@
 import hmac
+import time
+from collections import defaultdict
 
 from starlette.requests import Request
 from wtforms import SelectField, StringField
@@ -12,9 +14,28 @@ from app.models.quiz import Category, Question
 
 _OPTION_FIELD_NAMES = ["option_1", "option_2", "option_3", "option_4"]
 
+# Admin login uchun oddiy IP bo'yicha lockout - SQLAdmin o'z login yo'lini
+# o'zi ro'yxatdan o'tkazgani uchun slowapi dekoratorini bu yerga qo'yib
+# bo'lmaydi, shuning uchun xotirada saqlanadigan hisoblagich yetarli (bitta
+# instansiya, admin panel kam ishlatiladi).
+_MAX_ATTEMPTS = 5
+_LOCKOUT_SECONDS = 15 * 60
+_failed_attempts: dict[str, list[float]] = defaultdict(list)
+
+
+def _is_locked_out(ip: str) -> bool:
+    cutoff = time.monotonic() - _LOCKOUT_SECONDS
+    attempts = [t for t in _failed_attempts[ip] if t > cutoff]
+    _failed_attempts[ip] = attempts
+    return len(attempts) >= _MAX_ATTEMPTS
+
 
 class AdminAuth(AuthenticationBackend):
     async def login(self, request: Request) -> bool:
+        client_ip = request.client.host if request.client else "unknown"
+        if _is_locked_out(client_ip):
+            return False
+
         form = await request.form()
         username = form.get("username") or ""
         password = form.get("password") or ""
@@ -25,8 +46,11 @@ class AdminAuth(AuthenticationBackend):
         username_ok = hmac.compare_digest(username, settings.ADMIN_USERNAME)
         password_ok = hmac.compare_digest(password, settings.ADMIN_PASSWORD)
         if username_ok and password_ok:
+            _failed_attempts.pop(client_ip, None)
             request.session.update({"admin_authenticated": True})
             return True
+
+        _failed_attempts[client_ip].append(time.monotonic())
         return False
 
     async def logout(self, request: Request) -> bool:

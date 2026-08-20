@@ -4,13 +4,37 @@ from datetime import timezone
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
+from starlette.requests import Request
 
 from app.core.database import Base
+from app.core.limiter import limiter
 
 
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    # Har bir testdan oldin tozalanadi - aks holda bir xil (soxta) klient
+    # IP'i bilan qilingan testlar to'plami umumiy hisoblagichni to'ldirib,
+    # keyingi testlarda haqiqiy kod bilan aloqasi yo'q 429 xatoga olib kelardi.
+    limiter.reset()
+
+
+def make_request(client_ip: str = "testclient") -> Request:
+    """Route funksiyasini to'g'ridan-to'g'ri (HTTP qatlamisiz) chaqiradigan
+    testlar uchun - slowapi dekoratori haqiqiy `Request` obyektini talab
+    qiladi, chunki undan klient IP'ini o'qiydi."""
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/",
+        "headers": [],
+        "client": (client_ip, 12345),
+    }
+    return Request(scope)
 
 
 # aiosqlite (unlike asyncpg/Postgres) returns tz-naive datetimes for a
