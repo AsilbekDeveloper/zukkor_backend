@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     FIREBASE_SERVICE_ACCOUNT_PATH: str = "/etc/secrets/firebase-service-account.json"
+    # Render'ning "Secret File" xususiyati (yuqoridagi PATH) boshqa
+    # hostlarda (masalan Railway) yo'q - shu hostlarda buning o'rniga
+    # xizmat hisobi JSON'ining o'zi to'g'ridan-to'g'ri shu o'zgaruvchiga
+    # qo'yiladi. Ikkalasi ham bo'sh bo'lsa, Google kirish o'chiq qoladi.
+    FIREBASE_SERVICE_ACCOUNT_JSON: str = ""
 
     # Cloudflare R2 (S3-mos) — avatar rasmlari uchun doimiy saqlash.
     # Bo'sh bo'lsa lokal fayl tizimiga tushib qolinadi (faqat dev uchun;

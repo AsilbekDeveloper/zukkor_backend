@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 
@@ -13,7 +14,7 @@ _init_attempted = False
 
 
 def get_firebase_app() -> firebase_admin.App | None:
-    """Firebase Admin ilovasini birinchi chaqiruvda ishga tushiradi. Kalit fayli topilmasa None qaytaradi."""
+    """Firebase Admin ilovasini birinchi chaqiruvda ishga tushiradi. Kalit topilmasa None qaytaradi."""
     global _app, _init_attempted
 
     if _app is not None:
@@ -22,9 +23,19 @@ def get_firebase_app() -> firebase_admin.App | None:
         return None
     _init_attempted = True
 
+    if settings.FIREBASE_SERVICE_ACCOUNT_JSON:
+        try:
+            cred_data = json.loads(settings.FIREBASE_SERVICE_ACCOUNT_JSON)
+        except json.JSONDecodeError:
+            logger.warning("FIREBASE_SERVICE_ACCOUNT_JSON yaroqsiz JSON")
+            return None
+        cred = credentials.Certificate(cred_data)
+        _app = firebase_admin.initialize_app(cred)
+        return _app
+
     path = Path(settings.FIREBASE_SERVICE_ACCOUNT_PATH)
     if not path.is_file():
-        logger.warning("Firebase xizmat hisobi fayli topilmadi: %s", path)
+        logger.warning("Firebase xizmat hisobi topilmadi: fayl (%s) ham, FIREBASE_SERVICE_ACCOUNT_JSON ham yo'q", path)
         return None
 
     cred = credentials.Certificate(str(path))
