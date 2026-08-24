@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -133,7 +135,11 @@ async def upload_avatar(
     # Xom baytlarni saqlamaymiz — Pillow orqali qayta kodlaymiz (rasm ekanini
     # tekshiradi, EXIF/metadatani tozalaydi, o'lchamni chegaralaydi).
     try:
-        processed, ext, content_type = process_avatar(contents)
+        # to_thread: Pillow qayta kodlashi CPU-bog'liq va sinxron - to'g'ridan
+        # to'g'ri await qilinsa, shu vaqt davomida yagona event loop
+        # bloklanib, o'sha payt boshqa barcha foydalanuvchilarning Duel/Lobby
+        # WebSocket trafigi ham to'xtab qolardi.
+        processed, ext, content_type = await asyncio.to_thread(process_avatar, contents)
     except InvalidImageError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Fayl yaroqli rasm emas")
 

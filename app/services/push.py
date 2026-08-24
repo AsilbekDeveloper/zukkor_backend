@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from firebase_admin import exceptions as firebase_exceptions
@@ -25,7 +26,12 @@ async def send_push_to_user(db: AsyncSession, user_id: str, title: str, body: st
         tokens=list(tokens),
     )
     try:
-        response = messaging.send_each_for_multicast(message, app=app)
+        # to_thread: firebase-admin bu chaqiruvni sinxron, tarmoq orqali
+        # bajaradi - to'g'ridan-to'g'ri await qilinsa, javob kelguncha
+        # yagona event loop bloklanib, o'sha payt boshqa barcha
+        # foydalanuvchilarning Duel/Lobby WebSocket trafigi ham to'xtab
+        # qolardi.
+        response = await asyncio.to_thread(messaging.send_each_for_multicast, message, app=app)
     except firebase_exceptions.FirebaseError:
         logger.exception("Push yuborishda xatolik (user_id=%s)", user_id)
         return
