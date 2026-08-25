@@ -92,7 +92,7 @@ async def generate_ai_quiz(
         source = "ai_document"
     else:
         try:
-            questions = await generate_questions_from_topic(topic_clean, question_count)
+            questions = await generate_questions_from_topic(topic_clean, instruction_clean, question_count)
         except QuizGenerationError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 

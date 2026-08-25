@@ -138,9 +138,12 @@ async def generate_questions(text: str, instruction: str, question_count: int) -
     return _parse_and_validate(raw_text)
 
 
-async def generate_questions_from_topic(topic: str, question_count: int) -> list[dict]:
+async def generate_questions_from_topic(topic: str, instruction: str, question_count: int) -> list[dict]:
     """Mavzu bo'yicha - hech qanday hujjatsiz - AI'ning o'z bilimidan
-    foydalanib savollar tayyorlaydi.
+    foydalanib savollar tayyorlaydi. `instruction` ixtiyoriy qo'shimcha
+    yo'nalish beradi (masalan qiyinchilik darajasi, e'tibor qaratiladigan
+    qism) - `topic`dan alohida, chunki `topic` endi quiz nomi sifatida ham
+    ishlatiladi va sof mavzu bo'lishi kerak.
 
     Google qidiruvi (grounding) ATAYLAB ishlatilmaydi - u Gemini'da alohida
     "prepay" balans (haqiqiy pul, Cloud billing'dan mustaqil) talab qiladi.
@@ -148,11 +151,13 @@ async def generate_questions_from_topic(topic: str, question_count: int) -> list
     kelajakda grounding kerak bo'lsa, `_call_gemini(prompt, use_search=True)`
     ga qaytarish yetarli - qolgan struktura (schema, validatsiya) o'zgarmaydi.
     """
+    instruction_line = f"Qo'shimcha ko'rsatma: {instruction}\n" if instruction.strip() else ""
     prompt = (
         "Siz aqlli o'quv yordamchisiz. Quyidagi mavzu bo'yicha aniq, "
         "faktik ma'lumotlarga asoslangan test (viktorina) savollari "
         "tayyorlang.\n\n"
         f"Mavzu: {topic}\n"
+        f"{instruction_line}"
         f"Savollar soni: aynan {question_count} ta.\n\n"
         "Har bir savol uchun aynan 4 ta javob varianti bering, ulardan faqat bittasi "
         "to'g'ri bo'lsin. Savol va variantlarni mavzu qaysi tilda yozilgan bo'lsa, "

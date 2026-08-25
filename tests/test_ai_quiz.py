@@ -32,7 +32,7 @@ async def _fake_generate_questions(text, instruction, question_count):
     return FAKE_QUESTIONS[:question_count]
 
 
-async def _fake_generate_questions_from_topic(topic, question_count):
+async def _fake_generate_questions_from_topic(topic, instruction, question_count):
     return FAKE_QUESTIONS[:question_count]
 
 
@@ -98,7 +98,7 @@ async def test_generate_questions_from_topic_fails_fast_without_api_key():
     from app.services.ai_quiz_generation import generate_questions_from_topic
 
     with pytest.raises(QuizGenerationError):
-        await generate_questions_from_topic("2-jahon tarixi", 5)
+        await generate_questions_from_topic("2-jahon tarixi", "", 5)
 
 
 # --- router: generate/list/delete ---
