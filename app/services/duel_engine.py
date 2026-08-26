@@ -9,6 +9,7 @@ from app.models.duel import Duel, DuelAnswer, DuelQuestion
 from app.models.quiz import Category, Question
 from app.models.user import User
 from app.models.xp_event import XpEvent
+from app.services.xp_award import compute_xp_eligible_ball
 from app.services.scoring import calculate_ball
 from app.services.streak import update_streak
 from app.services.ws_manager import manager
@@ -348,7 +349,7 @@ async def _finish_duel(state: _ActiveDuel) -> None:
 
     async with AsyncSessionLocal() as db:
         result = await db.execute(
-            select(DuelAnswer, DuelQuestion.order, Question.question_text)
+            select(DuelAnswer, DuelQuestion.order, Question.question_text, Question.id)
             .join(DuelQuestion, DuelQuestion.id == DuelAnswer.duel_question_id)
             .join(Question, Question.id == DuelQuestion.question_id)
             .where(DuelQuestion.duel_id == state.duel_id)
@@ -360,7 +361,7 @@ async def _finish_duel(state: _ActiveDuel) -> None:
         def _breakdown_for(uid: str) -> list[dict]:
             return [
                 {"order": order, "question_text": question_text, "is_correct": answer.is_correct}
-                for answer, order, question_text in all_rows
+                for answer, order, question_text, _question_id in all_rows
                 if answer.user_id == uid
             ]
 
@@ -392,7 +393,39 @@ async def _finish_duel(state: _ActiveDuel) -> None:
             a_result, b_result = "draw", "draw"
 
         a_ball, b_ball = _ball_for(state.user_a_id), _ball_for(state.user_b_id)
-        a_xp, b_xp = round(a_ball / 100), round(b_ball / 100)
+
+        category = await db.get(Category, state.category_id)
+        is_official = category.owner_user_id is None
+
+        def _per_question_answers(uid: str) -> list[tuple[int, bool, int]]:
+            return [
+                (
+                    question_id,
+                    answer.is_correct,
+                    calculate_ball(answer.elapsed_ms or QUESTION_TIME_LIMIT_MS, QUESTION_TIME_LIMIT_MS, answer.is_correct),
+                )
+                for answer, _order, _text, question_id in all_rows
+                if answer.user_id == uid
+            ]
+
+        # A participant may have deleted their account mid-duel - see the
+        # user_a/user_b None-check below. Fetching here (rather than after)
+        # so a deleted account never gets a QuestionXpAward row inserted for
+        # a user_id that no longer exists (that FK would fail the commit).
+        user_a = await db.get(User, state.user_a_id)
+        user_b = await db.get(User, state.user_b_id)
+
+        a_xp_ball = (
+            await compute_xp_eligible_ball(db, state.user_a_id, is_official, _per_question_answers(state.user_a_id))
+            if user_a is not None
+            else a_ball
+        )
+        b_xp_ball = (
+            await compute_xp_eligible_ball(db, state.user_b_id, is_official, _per_question_answers(state.user_b_id))
+            if user_b is not None
+            else b_ball
+        )
+        a_xp, b_xp = round(a_xp_ball / 100), round(b_xp_ball / 100)
 
         duel = await db.get(Duel, state.duel_id)
         duel.status = "finished"
@@ -413,18 +446,17 @@ async def _finish_duel(state: _ActiveDuel) -> None:
         # A participant may have deleted their account mid-duel - their side
         # of this very Duel row was already reassigned to the placeholder
         # user, but `state.user_a_id`/`state.user_b_id` here still hold the
-        # ORIGINAL id captured when the duel started, so `db.get` returns
-        # None. Skipping xp/streak/XpEvent for that side (rather than
-        # crashing on a None attribute access) keeps the commit - and the
-        # still-active opponent's own notification below - from failing too.
-        user_a = await db.get(User, state.user_a_id)
+        # ORIGINAL id captured when the duel started, so `user_a`/`user_b`
+        # (fetched above) are None. Skipping xp/streak/XpEvent for that side
+        # (rather than crashing on a None attribute access) keeps the commit
+        # - and the still-active opponent's own notification below - from
+        # failing too.
         if user_a is not None:
             user_a.total_xp += a_xp
             user_a.games_played += 1
             update_streak(user_a, duel.finished_at)
             db.add(XpEvent(user_id=state.user_a_id, amount=a_xp))
 
-        user_b = await db.get(User, state.user_b_id)
         if user_b is not None:
             user_b.total_xp += b_xp
             user_b.games_played += 1

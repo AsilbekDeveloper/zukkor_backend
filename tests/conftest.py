@@ -52,6 +52,7 @@ class _NaiveNowDatetime(real_datetime):
 @pytest.fixture(autouse=True)
 def _patch_naive_now(monkeypatch):
     monkeypatch.setattr("app.routers.auth.datetime", _NaiveNowDatetime)
+    monkeypatch.setattr("app.routers.quiz.datetime", _NaiveNowDatetime)
 
 
 @pytest.fixture

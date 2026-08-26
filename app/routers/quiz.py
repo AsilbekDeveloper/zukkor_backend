@@ -23,6 +23,7 @@ from app.schemas.quiz import (
 from app.services.quiz_access import can_access_category
 from app.services.scoring import calculate_ball
 from app.services.streak import update_streak
+from app.services.xp_award import compute_xp_eligible_ball
 
 router = APIRouter()
 
@@ -212,7 +213,7 @@ async def answer_question(
     session.finished_at = now
 
     all_answers_result = await db.execute(
-        select(Answer, SessionQuestion.order, Question.question_text)
+        select(Answer, SessionQuestion.order, Question.question_text, Question.id)
         .join(SessionQuestion, Answer.session_question_id == SessionQuestion.id)
         .join(Question, Question.id == SessionQuestion.question_id)
         .where(SessionQuestion.session_id == session_id)
@@ -223,11 +224,19 @@ async def answer_question(
 
     total_ball = sum(a.ball for a in all_answers)
     correct_count = sum(1 for a in all_answers if a.is_correct)
-    xp_earned = round(total_ball / 100)
     breakdown = [
         QuestionBreakdownOut(order=order, question_text=question_text, is_correct=answer.is_correct)
-        for answer, order, question_text in all_rows
+        for answer, order, question_text, _question_id in all_rows
     ]
+
+    category = await db.get(Category, session.category_id)
+    xp_eligible_ball = await compute_xp_eligible_ball(
+        db,
+        current_user.id,
+        category.owner_user_id is None,
+        [(question_id, answer.is_correct, answer.ball) for answer, _order, _text, question_id in all_rows],
+    )
+    xp_earned = round(xp_eligible_ball / 100)
 
     session.total_ball = total_ball
     session.total_xp_earned = xp_earned

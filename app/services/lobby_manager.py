@@ -13,6 +13,7 @@ from app.models.lobby_game import LobbyGame, LobbyGameResult
 from app.models.quiz import Category, Question
 from app.models.user import User
 from app.models.xp_event import XpEvent
+from app.services.xp_award import compute_xp_eligible_ball
 from app.services.quiz_access import can_access_category
 from app.services.scoring import calculate_ball
 from app.services.streak import update_streak
@@ -276,6 +277,7 @@ async def start_game(
 
             questions_data.append(
                 {
+                    "question_id": question.id,
                     "question_text": question.question_text,
                     "shuffled_options": shuffled_options,
                     "correct_option": correct_option,
@@ -420,7 +422,9 @@ async def _handle_participant_finished_question(
     if task is not None and task is not asyncio.current_task():
         task.cancel()
 
-    game.answers_log[participant_id].append({"elapsed_ms": elapsed_ms, "is_correct": is_correct})
+    game.answers_log[participant_id].append(
+        {"question_id": q["question_id"], "elapsed_ms": elapsed_ms, "is_correct": is_correct}
+    )
 
     participant = room.participants.get(participant_id)
     if participant is not None:
@@ -482,9 +486,11 @@ async def _finish_game(room: _Room) -> None:
         db.add(lobby_game)
         await db.flush()  # lobby_game.id (server-generated) - keyingi FK yozuvlar uchun kerak
 
+        category = await db.get(Category, game.category_id)
+        is_official = category.owner_user_id is None
+
         for participant_id, user_id in game.participant_user_ids.items():
             correct, total_time_ms, ball = scores[participant_id]
-            xp = round(ball / 100)
 
             user = await db.get(User, user_id)
             if user is None:
@@ -495,6 +501,13 @@ async def _finish_game(room: _Room) -> None:
                 # entirely rather than let one deleted account cost
                 # everyone else their earned XP for the round.
                 continue
+
+            per_question_answers = [
+                (a["question_id"], a["is_correct"], calculate_ball(a["elapsed_ms"], QUESTION_TIME_LIMIT_MS, a["is_correct"]))
+                for a in game.answers_log[participant_id]
+            ]
+            xp_ball = await compute_xp_eligible_ball(db, user_id, is_official, per_question_answers)
+            xp = round(xp_ball / 100)
 
             user.total_xp += xp
             user.games_played += 1
