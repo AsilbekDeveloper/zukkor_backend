@@ -320,6 +320,9 @@ async def _send_question_to_participant(room: _Room, participant_id: str, index:
                 "question": {
                     "text": q["question_text"],
                     "options": q["shuffled_options"],
+                    # Ataylab (2026-08-26) - klient tanlangan zahoti to'g'ri/
+                    # noto'g'rini serverga murojaat qilmasdan ko'rsatishi uchun.
+                    "correct_option": q["correct_option"],
                     "time_limit_ms": QUESTION_TIME_LIMIT_MS,
                 },
             },

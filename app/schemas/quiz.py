@@ -18,6 +18,13 @@ class QuestionOut(BaseModel):
     session_question_id: int
     question_text: str
     options: list[str]
+    # Ataylab, foydalanuvchi so'rovi bilan qo'shildi (2026-08-26) - avval
+    # bu qiymat faqat javob berilgandan keyin yuborilardi (aldashning
+    # oldini olish uchun). Endi savol bilan birga kelib, klient
+    # to'g'ri/noto'g'rini serverga murojaat qilmasdan bir zumda ko'rsata
+    # oladi - buning evaziga to'g'ri javob endi tarmoq orqali oldindan
+    # ko'rinadi (aylanma yo'l bilan aldash mumkin bo'lib qoladi).
+    correct_option_index: int
     order: int
     total: int
     time_limit_ms: int

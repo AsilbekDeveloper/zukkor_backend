@@ -149,3 +149,19 @@ async def test_start_quiz_allows_anyone_on_public_category(db_session):
         QuizStartRequest(category_id=category.id, question_count=1), current_user=stranger, db=db_session
     )
     assert result.question is not None
+
+
+@pytest.mark.anyio
+async def test_start_quiz_response_points_at_the_real_correct_option(db_session):
+    # correct_option_index is sent upfront now (deliberately, so the app
+    # can reveal right/wrong instantly on tap) - it must track the
+    # SHUFFLED display order, not the raw DB index, or the client would
+    # highlight the wrong option as correct.
+    owner = await _create_user(db_session, "owner10@example.com")
+    category = await _create_owned_category(db_session, owner, visibility="public")
+
+    result = await start_quiz(
+        QuizStartRequest(category_id=category.id, question_count=1), current_user=owner, db=db_session
+    )
+    question = result.question
+    assert question.options[question.correct_option_index] == "a"

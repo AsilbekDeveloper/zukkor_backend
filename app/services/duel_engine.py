@@ -221,6 +221,9 @@ async def _send_question_to_user(state: _ActiveDuel, user_id: str, index: int) -
             "question": {
                 "text": q["question_text"],
                 "options": q["shuffled_options"],
+                # Ataylab (2026-08-26) - klient tanlangan zahoti to'g'ri/
+                # noto'g'rini serverga murojaat qilmasdan ko'rsatishi uchun.
+                "correct_option": q["correct_option"],
                 "time_limit_ms": QUESTION_TIME_LIMIT_MS,
             },
         },
