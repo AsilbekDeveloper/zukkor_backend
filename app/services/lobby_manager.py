@@ -27,8 +27,10 @@ PRE_GAME_COUNTDOWN_SECONDS = 5
 # Har savoldan keyin to'g'ri/noto'g'ri belgisi ekranda ko'rinib turishi
 # uchun keyingi savolga o'tishdan oldingi minimal pauza - buni qo'shmasdan
 # javob berilgan zahoti keyingi savol darhol translyatsiya qilinib, natija
-# bir zumda almashtirilib ketardi.
-REVEAL_PAUSE_SECONDS = 1.5
+# bir zumda almashtirilib ketardi. Solo quiz'dagi xuddi shu maqsaddagi
+# pauza (900ms) bilan bir xil - uch rejimda ham izchil, imkon qadar tez
+# (2026-08-26, foydalanuvchi so'rovi bilan 1.5s'dan tushirildi).
+REVEAL_PAUSE_SECONDS = 0.9
 
 
 async def _safe_send(websocket: WebSocket, message: dict) -> bool:
