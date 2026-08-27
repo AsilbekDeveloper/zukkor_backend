@@ -58,3 +58,21 @@ class RefreshToken(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     is_revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PasswordResetCode(Base):
+    __tablename__ = "password_reset_codes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"))
+    # Xom 6 xonali kod emas - app.core.security.hash_token() natijasi
+    # (SHA-256 hex digest) saqlanadi.
+    code_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # 6 xonali kod atigi 1 million variantga ega - shu maydon orqali
+    # noto'g'ri urinishlar cheklanadi (routers/auth.py'dagi MAX_RESET_ATTEMPTS),
+    # aks holda umumiy rate-limiting yo'q hozircha kodni taxmin qilib topish
+    # mumkin bo'lardi.
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    is_used: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

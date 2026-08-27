@@ -42,6 +42,20 @@ class Settings(BaseSettings):
     # holda /ai-quiz/generate xizmat mavjud emasligi haqida xato qaytaradi.
     GEMINI_API_KEY: str = ""
 
+    # Parolni tiklash kodini emailga yuborish uchun (Gmail SMTP - App
+    # Password bilan). SMTP_USERNAME bo'sh bo'lsa ilova baribir ishga
+    # tushadi - shunday holda forgot-password email jo'natmasdan jim
+    # o'tkazib yuboradi (R2/Gemini kabi, hali sozlanmagan bo'lsa ham
+    # dev/deploy to'xtab qolmasin deb).
+    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    # Oddiy Gmail parol emas - Google hisobda 2FA yoqilgach yaratiladigan
+    # 16 xonali "App Password".
+    SMTP_PASSWORD: str = ""
+    # Bo'sh qoldirilsa SMTP_USERNAME'ning o'zi ishlatiladi.
+    SMTP_FROM_EMAIL: str = ""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("DATABASE_URL")

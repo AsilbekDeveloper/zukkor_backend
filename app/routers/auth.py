@@ -1,4 +1,6 @@
-from datetime import datetime, timezone
+import hmac
+import secrets
+from datetime import datetime, timedelta, timezone
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -27,16 +29,19 @@ from app.models.lobby_game import LobbyGameResult
 from app.models.notification import Notification
 from app.models.push_token import PushToken
 from app.models.quiz import Answer, QuizSession, SessionQuestion
-from app.models.user import RefreshToken, User
+from app.models.user import PasswordResetCode, RefreshToken, User
+from app.services.email import send_password_reset_email
 from app.services.firebase import get_firebase_app
 from app.models.xp_event import XpEvent
 from app.schemas.auth import (
     ChangePasswordRequest,
     DeleteAccountRequest,
+    ForgotPasswordRequest,
     GoogleAuthRequest,
     LoginRequest,
     RefreshRequest,
     RegisterRequest,
+    ResetPasswordRequest,
     TokenResponse,
     UserResponse,
 )
@@ -279,6 +284,91 @@ async def change_password(
         update(RefreshToken)
         .where(RefreshToken.user_id == current_user.id, RefreshToken.is_revoked.is_(False))
         .values(is_revoked=True)
+    )
+    await db.commit()
+
+
+RESET_CODE_EXPIRE_MINUTES = 15
+MAX_RESET_ATTEMPTS = 5
+
+
+def _generate_reset_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+@router.post(
+    "/forgot-password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Parolni tiklash kodini so'rash",
+    description="Email mavjud bo'lsa 6 xonali kod yuboriladi. Email mavjudligini oshkor qilmaslik uchun "
+    "har doim (email topilmasa ham) bir xil 204 javob qaytariladi.",
+)
+@limiter.limit("5/hour")
+async def forgot_password(request: Request, data: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(User).where(User.email == data.email))
+    user = result.scalar_one_or_none()
+
+    # Google-only hisoblarda parol umuman yo'q - tiklashga hech narsa yo'q,
+    # shuning uchun email yuborilmaydi (lekin javob baribir bir xil 204).
+    if user is not None and user.hashed_password is not None and user.is_active:
+        code = _generate_reset_code()
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=RESET_CODE_EXPIRE_MINUTES)
+
+        # Bir vaqtda faqat bitta faol kod - oldingi ishlatilmagan kodlar bekor qilinadi.
+        await db.execute(
+            update(PasswordResetCode)
+            .where(PasswordResetCode.user_id == user.id, PasswordResetCode.is_used.is_(False))
+            .values(is_used=True)
+        )
+        db.add(PasswordResetCode(user_id=user.id, code_hash=hash_token(code), expires_at=expires_at))
+        await db.commit()
+
+        await send_password_reset_email(user.email, code)
+
+
+@router.post(
+    "/reset-password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Kod orqali parolni tiklash",
+)
+@limiter.limit("10/minute")
+async def reset_password(request: Request, data: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+    generic_error = HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Kod noto'g'ri yoki muddati o'tgan")
+
+    result = await db.execute(select(User).where(User.email == data.email))
+    user = result.scalar_one_or_none()
+    if user is None:
+        raise generic_error
+
+    result = await db.execute(
+        select(PasswordResetCode)
+        .where(PasswordResetCode.user_id == user.id, PasswordResetCode.is_used.is_(False))
+        .order_by(PasswordResetCode.created_at.desc())
+    )
+    reset_code = result.scalars().first()
+
+    if reset_code is None or reset_code.expires_at < datetime.now(timezone.utc):
+        raise generic_error
+
+    if reset_code.attempts >= MAX_RESET_ATTEMPTS:
+        reset_code.is_used = True
+        await db.commit()
+        raise generic_error
+
+    if not hmac.compare_digest(hash_token(data.code), reset_code.code_hash):
+        reset_code.attempts += 1
+        await db.commit()
+        raise generic_error
+
+    reset_code.is_used = True
+    user.hashed_password = hash_password(data.new_password)
+
+    # change_password bilan bir xil ehtiyot chorasi - eski refresh tokenlar
+    # (masalan tajovuzkorning qo'lidagilari) endi ishlamay qoladi.
+    await db.execute(
+        update(RefreshToken).where(RefreshToken.user_id == user.id, RefreshToken.is_revoked.is_(False)).values(
+            is_revoked=True
+        )
     )
     await db.commit()
 
