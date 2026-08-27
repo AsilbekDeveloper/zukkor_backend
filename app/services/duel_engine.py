@@ -360,8 +360,8 @@ async def _finish_duel(state: _ActiveDuel) -> None:
 
         def _breakdown_for(uid: str) -> list[dict]:
             return [
-                {"order": order, "question_text": question_text, "is_correct": answer.is_correct}
-                for answer, order, question_text, _question_id in all_rows
+                {"order": order, "question_id": question_id, "question_text": question_text, "is_correct": answer.is_correct}
+                for answer, order, question_text, question_id in all_rows
                 if answer.user_id == uid
             ]
 

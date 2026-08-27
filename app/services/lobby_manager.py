@@ -471,6 +471,7 @@ async def _finish_game(room: _Room) -> None:
         return [
             {
                 "order": i,
+                "question_id": game.questions[i]["question_id"],
                 "question_text": game.questions[i]["question_text"],
                 "is_correct": game.answers_log[pid][i]["is_correct"],
             }

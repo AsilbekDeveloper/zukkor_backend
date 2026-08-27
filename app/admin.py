@@ -11,6 +11,7 @@ from sqladmin.authentication import AuthenticationBackend
 
 from app.core.config import settings
 from app.models.quiz import Category, Question
+from app.models.reported_question import ReportedQuestion
 
 _OPTION_FIELD_NAMES = ["option_1", "option_2", "option_3", "option_4"]
 
@@ -114,3 +115,21 @@ class QuestionAdmin(ModelView, model=Question):
         correct_option = data.pop("correct_option", "0")
         data["options"] = options
         data["correct_option_index"] = int(correct_option)
+
+
+class ReportedQuestionAdmin(ModelView, model=ReportedQuestion):
+    name = "Shikoyat"
+    name_plural = "Savol shikoyatlari"
+    icon = "fa-solid fa-flag"
+
+    column_list = [
+        ReportedQuestion.id,
+        ReportedQuestion.question,
+        ReportedQuestion.reason,
+        ReportedQuestion.comment,
+        ReportedQuestion.status,
+        ReportedQuestion.created_at,
+    ]
+    column_sortable_list = [ReportedQuestion.id, ReportedQuestion.status, ReportedQuestion.created_at]
+    column_default_sort = [(ReportedQuestion.created_at, True)]
+    form_columns = [ReportedQuestion.status]

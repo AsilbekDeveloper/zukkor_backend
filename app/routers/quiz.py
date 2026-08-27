@@ -225,8 +225,8 @@ async def answer_question(
     total_ball = sum(a.ball for a in all_answers)
     correct_count = sum(1 for a in all_answers if a.is_correct)
     breakdown = [
-        QuestionBreakdownOut(order=order, question_text=question_text, is_correct=answer.is_correct)
-        for answer, order, question_text, _question_id in all_rows
+        QuestionBreakdownOut(order=order, question_id=question_id, question_text=question_text, is_correct=answer.is_correct)
+        for answer, order, question_text, question_id in all_rows
     ]
 
     category = await db.get(Category, session.category_id)

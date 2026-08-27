@@ -42,6 +42,7 @@ class AnswerRequest(BaseModel):
 
 class QuestionBreakdownOut(BaseModel):
     order: int
+    question_id: int
     question_text: str
     is_correct: bool
 
