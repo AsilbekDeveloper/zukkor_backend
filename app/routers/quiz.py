@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.quiz import Answer, Category, Question, QuizSession, SessionQuestion
+from app.models.seen_question import SeenQuestion
 from app.models.user import User
 from app.models.xp_event import XpEvent
 from app.schemas.quiz import (
@@ -28,13 +29,42 @@ from app.services.xp_award import compute_xp_eligible_ball
 router = APIRouter()
 
 
-async def _pick_random_question(db: AsyncSession, category_id: int, exclude_question_ids: list[int]):
-    stmt = select(Question).where(Question.category_id == category_id, Question.is_active.is_(True))
+async def _pick_fresh_question(
+    db: AsyncSession, category_id: int, user_id: str, exclude_question_ids: list[int]
+) -> Question | None:
+    """Bir xil kategoriyani qayta-qayta o'ynaganda, foydalanuvchiga hali
+    umuman ko'rsatilmagan (SeenQuestion'da yo'q) savollar birinchi
+    navbatda tanlanadi - ular tugagach (bu foydalanuvchi uchun
+    kategoriyadagi barcha savollar kamida bir marta ko'rilgach), qolgan
+    o'rinlar oldin ko'rilgan savollardan tasodifiy to'ldiriladi.
+    `exclude_question_ids` (shu sessiyada allaqachon ishlatilganlar) har
+    doim qat'iy inobatga olinadi - bu ikkalasidan mustaqil.
+    """
+    base_stmt = select(Question).where(Question.category_id == category_id, Question.is_active.is_(True))
     if exclude_question_ids:
-        stmt = stmt.where(Question.id.notin_(exclude_question_ids))
-    stmt = stmt.order_by(func.random()).limit(1)
-    result = await db.execute(stmt)
-    return result.scalar_one_or_none()
+        base_stmt = base_stmt.where(Question.id.notin_(exclude_question_ids))
+
+    seen_subquery = select(SeenQuestion.question_id).where(SeenQuestion.user_id == user_id)
+
+    unseen_result = await db.execute(
+        base_stmt.where(Question.id.notin_(seen_subquery)).order_by(func.random()).limit(1)
+    )
+    question = unseen_result.scalar_one_or_none()
+    if question is not None:
+        return question
+
+    # No never-seen question left (within exclude_question_ids' constraint) -
+    # fall back to any eligible question, seen or not.
+    fallback_result = await db.execute(base_stmt.order_by(func.random()).limit(1))
+    return fallback_result.scalar_one_or_none()
+
+
+async def _mark_question_seen(db: AsyncSession, user_id: str, question_id: int) -> None:
+    existing = await db.execute(
+        select(SeenQuestion.id).where(SeenQuestion.user_id == user_id, SeenQuestion.question_id == question_id)
+    )
+    if existing.scalar_one_or_none() is None:
+        db.add(SeenQuestion(user_id=user_id, question_id=question_id))
 
 
 def _shuffle_options(question: Question) -> list[int]:
@@ -85,7 +115,7 @@ async def start_quiz(
 
     total = min(data.question_count, available)
 
-    first_question = await _pick_random_question(db, category.id, [])
+    first_question = await _pick_fresh_question(db, category.id, current_user.id, [])
     option_order = _shuffle_options(first_question)
 
     session = QuizSession(user_id=current_user.id, category_id=category.id)
@@ -101,6 +131,7 @@ async def start_quiz(
         option_order=option_order,
     )
     db.add(session_question)
+    await _mark_question_seen(db, current_user.id, first_question.id)
     await db.commit()
     await db.refresh(session_question)
 
@@ -171,7 +202,7 @@ async def answer_question(
         )
         used_question_ids = [row[0] for row in used_result.all()]
 
-        next_question = await _pick_random_question(db, session.category_id, used_question_ids)
+        next_question = await _pick_fresh_question(db, session.category_id, current_user.id, used_question_ids)
         next_option_order = _shuffle_options(next_question)
 
         next_session_question = SessionQuestion(
@@ -183,6 +214,7 @@ async def answer_question(
             option_order=next_option_order,
         )
         db.add(next_session_question)
+        await _mark_question_seen(db, current_user.id, next_question.id)
         try:
             await db.commit()
         except IntegrityError:
