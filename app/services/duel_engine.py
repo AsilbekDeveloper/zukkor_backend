@@ -70,6 +70,10 @@ def is_user_in_active_duel(user_id: str) -> bool:
     return user_id in _user_active_duel
 
 
+def get_active_duel_id(user_id: str) -> str | None:
+    return _user_active_duel.get(user_id)
+
+
 def _other_user_id(state: _ActiveDuel, user_id: str) -> str:
     return state.user_b_id if user_id == state.user_a_id else state.user_a_id
 
@@ -267,6 +271,47 @@ async def submit_answer(user_id: str, duel_id: str, question_index, selected_opt
     if selected_option is not None and not isinstance(selected_option, int):
         return
     await _process_user_answer(state, user_id, question_index, selected_option)
+
+
+async def forfeit_duel(leaving_user_id: str, duel_id: str) -> None:
+    """A player left mid-duel - explicitly (client sends `duel_leave` after
+    its own confirm dialog) or by disconnecting outright (network drop,
+    app killed - the websocket's own `finally` block calls this the same
+    way). The whole match is voided for BOTH sides - no ball/XP for
+    either (per the user's own call: a departure shouldn't hand the
+    remaining player a free forfeit-win) - the opponent is notified, and
+    the duel is torn down immediately instead of being left to hang
+    forever waiting on a side that's gone.
+    """
+    state = _active_duels.get(duel_id)
+    if state is None or leaving_user_id not in (state.user_a_id, state.user_b_id):
+        return
+
+    async with state.lock:
+        if state.finished:
+            return
+        state.finished = True
+        for task in list(state.user_timeout_task.values()):
+            task.cancel()
+        state.user_timeout_task.clear()
+
+    other_user_id = _other_user_id(state, leaving_user_id)
+
+    async with AsyncSessionLocal() as db:
+        duel = await db.get(Duel, duel_id)
+        if duel is not None:
+            duel.status = "cancelled"
+            duel.finished_at = datetime.now(timezone.utc)
+            await db.commit()
+
+    await manager.send_to_user(
+        other_user_id,
+        {"type": "duel_cancelled", "duel_id": duel_id, "reason": "opponent_left"},
+    )
+
+    _active_duels.pop(duel_id, None)
+    _user_active_duel.pop(state.user_a_id, None)
+    _user_active_duel.pop(state.user_b_id, None)
 
 
 async def _process_user_answer(state: _ActiveDuel, user_id: str, question_index: int, selected_option) -> None:

@@ -251,6 +251,10 @@ async def duel_ws(websocket: WebSocket):
                     await duel_engine.submit_answer(
                         user.id, duel_id, data.get("question_index"), data.get("selected_option")
                     )
+            elif msg_type == "duel_leave":
+                duel_id = data.get("duel_id")
+                if isinstance(duel_id, str):
+                    await duel_engine.forfeit_duel(user.id, duel_id)
             elif msg_type == "ping":
                 await websocket.send_json({"type": "pong"})
             else:
@@ -261,3 +265,10 @@ async def duel_ws(websocket: WebSocket):
         pass
     finally:
         manager.disconnect(user.id, websocket)
+        # An abrupt disconnect (network drop, app killed) mid-duel must be
+        # treated the same as an explicit `duel_leave` - otherwise the
+        # opponent is left waiting forever on a side that's gone, with no
+        # notification and no way for the duel to ever resolve.
+        active_duel_id = duel_engine.get_active_duel_id(user.id)
+        if active_duel_id is not None:
+            await duel_engine.forfeit_duel(user.id, active_duel_id)
