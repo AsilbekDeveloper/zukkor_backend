@@ -2,8 +2,6 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 def _password_strength(v: str) -> str:
-    if not any(c.isupper() for c in v):
-        raise ValueError("Parolda kamida 1 ta katta harf bo'lishi kerak")
     if not any(c.isdigit() for c in v):
         raise ValueError("Parolda kamida 1 ta raqam bo'lishi kerak")
     return v
@@ -21,7 +19,7 @@ MAX_EMAIL_LEN = 255
 
 class RegisterRequest(BaseModel):
     email: EmailStr = Field(..., max_length=MAX_EMAIL_LEN, examples=["ali@example.com"])
-    password: str = Field(..., min_length=8, max_length=MAX_PASSWORD_LEN, examples=["Parol1234"])
+    password: str = Field(..., min_length=6, max_length=MAX_PASSWORD_LEN, examples=["Parol1234"])
 
     @field_validator("password")
     @classmethod
@@ -50,7 +48,7 @@ class RefreshRequest(BaseModel):
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
-    new_password: str = Field(..., min_length=8, max_length=MAX_PASSWORD_LEN, examples=["YangiParol1234"])
+    new_password: str = Field(..., min_length=6, max_length=MAX_PASSWORD_LEN, examples=["YangiParol1234"])
 
     @field_validator("new_password")
     @classmethod
@@ -65,7 +63,7 @@ class ForgotPasswordRequest(BaseModel):
 class ResetPasswordRequest(BaseModel):
     email: EmailStr = Field(..., max_length=MAX_EMAIL_LEN, examples=["ali@example.com"])
     code: str = Field(..., min_length=6, max_length=6, examples=["123456"])
-    new_password: str = Field(..., min_length=8, max_length=MAX_PASSWORD_LEN, examples=["YangiParol1234"])
+    new_password: str = Field(..., min_length=6, max_length=MAX_PASSWORD_LEN, examples=["YangiParol1234"])
 
     @field_validator("code")
     @classmethod
