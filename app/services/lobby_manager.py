@@ -184,16 +184,63 @@ async def leave_room(room_id: str, participant_id: str) -> None:
 
     participant = room.participants.pop(participant_id)
 
+    if room.game is not None:
+        # A game is already running - leaving (host or not) must never
+        # abruptly end it for everyone else. Just stop tracking this one
+        # participant and let the rest continue at their own pace.
+        await _remove_participant_from_game(room, participant_id)
+        if room.participants:
+            await _broadcast_room_update(room)
+        else:
+            # Room is now empty - nothing left to finish or notify.
+            _rooms.pop(room_id, None)
+            _room_code_index.pop(room.room_code, None)
+        return
+
+    # Pre-game (waiting room, nobody has started yet): the host leaving
+    # closes the room for everyone (there's no game state worth
+    # preserving); a regular participant leaving just updates the list.
     if participant.is_host:
-        if room.game is not None:
-            for task in room.game.participant_timeout_task.values():
-                task.cancel()
         for p in list(room.participants.values()):
             await _safe_send(p.websocket, {"type": "lobby_closed", "room_id": room_id})
         _rooms.pop(room_id, None)
         _room_code_index.pop(room.room_code, None)
     elif room.participants:
         await _broadcast_room_update(room)
+
+
+async def _remove_participant_from_game(room: _Room, participant_id: str) -> None:
+    """A participant left mid-game - stop tracking them entirely (no ball/
+    XP for a voided departure, and their pending 15s timeout is cancelled
+    so it doesn't keep the room in "waiting for others" for however many
+    questions they had left). If this leaves the room down to its last
+    active player, end the game for them right away instead of making
+    them grind through the remaining questions alone with no one to
+    compare against.
+    """
+    game = room.game
+    if game is None:
+        return
+
+    async with game.lock:
+        task = game.participant_timeout_task.pop(participant_id, None)
+        if task is not None:
+            task.cancel()
+        game.participant_user_ids.pop(participant_id, None)
+        game.participant_index.pop(participant_id, None)
+        game.participant_sent_at.pop(participant_id, None)
+        game.participant_finished.pop(participant_id, None)
+        game.participant_pending_advance.discard(participant_id)
+        game.answers_log.pop(participant_id, None)
+
+        if game.finished:
+            return
+
+        remaining = list(game.participant_user_ids)
+        if not remaining:
+            return  # Room emptied out mid-game - nobody left to score or notify.
+        if len(remaining) == 1 or all(game.participant_finished.get(pid, False) for pid in remaining):
+            await _finish_game(room)
 
 
 # ---------------------------------------------------------------------------
@@ -345,8 +392,8 @@ async def _participant_timeout(room: _Room, participant_id: str, index: int) -> 
         await asyncio.sleep(QUESTION_TIME_LIMIT_MS / 1000)
     except asyncio.CancelledError:
         return
-    if room.game is None:
-        return
+    if room.game is None or participant_id not in room.game.participant_user_ids:
+        return  # Game ended, or this participant already left the room.
     await _process_participant_answer(room, participant_id, index, None)
 
 
@@ -388,7 +435,10 @@ async def _process_participant_answer(
 
     async with game.lock:
         game.participant_pending_advance.discard(participant_id)
-        if game.finished:
+        # The participant may have left during the reveal pause above (its
+        # own lock-free window) - _remove_participant_from_game already
+        # stopped tracking them, so don't resurrect their entry here.
+        if game.finished or participant_id not in game.participant_user_ids:
             return
 
         next_index = question_index + 1
