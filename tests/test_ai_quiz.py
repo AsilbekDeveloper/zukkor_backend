@@ -13,11 +13,12 @@ from app.routers.ai_quiz import (
     generate_ai_quiz,
     list_my_ai_quizzes,
     list_user_quizzes,
+    update_quiz_topic,
     update_quiz_visibility,
 )
 from app.routers.categories import list_categories
 from app.routers.quiz import start_quiz
-from app.schemas.ai_quiz import ManualQuestionIn, ManualQuizCreate, VisibilityUpdate
+from app.schemas.ai_quiz import ManualQuestionIn, ManualQuizCreate, TopicUpdate, VisibilityUpdate
 from app.schemas.quiz import QuizStartRequest
 from app.services.ai_quiz_generation import QuizGenerationError, _validate_questions
 from app.services.document_text import UnsupportedDocumentError, extract_text
@@ -114,6 +115,7 @@ async def test_generate_ai_quiz_creates_private_category(db_session, monkeypatch
         instruction="hammasidan 2 ta savol",
         topic=None,
         question_count=2,
+        topic_category_id=None,
         current_user=user,
         db=db_session,
     )
@@ -140,6 +142,7 @@ async def test_generate_ai_quiz_instruction_is_optional_with_file(db_session, mo
         instruction=None,
         topic=None,
         question_count=2,
+        topic_category_id=None,
         current_user=user,
         db=db_session,
     )
@@ -157,6 +160,7 @@ async def test_generate_ai_quiz_topic_only_uses_web_search(db_session, monkeypat
         instruction=None,
         topic="2-jahon tarixidan savollar, o'rtacha qiyinchilik",
         question_count=2,
+        topic_category_id=None,
         current_user=user,
         db=db_session,
     )
@@ -179,6 +183,7 @@ async def test_generate_ai_quiz_rejects_when_neither_file_nor_topic_given(db_ses
             instruction=None,
             topic=None,
             question_count=2,
+            topic_category_id=None,
             current_user=user,
             db=db_session,
         )
@@ -196,6 +201,7 @@ async def test_generate_ai_quiz_rejects_unsupported_file(db_session, monkeypatch
             instruction="savollar",
             topic=None,
             question_count=2,
+            topic_category_id=None,
             current_user=user,
             db=db_session,
         )
@@ -215,6 +221,7 @@ async def test_list_my_ai_quizzes_only_returns_own_active_quizzes(db_session, mo
         instruction="x",
         topic=None,
         question_count=2,
+        topic_category_id=None,
         current_user=user_a,
         db=db_session,
     )
@@ -223,6 +230,7 @@ async def test_list_my_ai_quizzes_only_returns_own_active_quizzes(db_session, mo
         instruction="x",
         topic=None,
         question_count=2,
+        topic_category_id=None,
         current_user=user_b,
         db=db_session,
     )
@@ -243,6 +251,7 @@ async def test_delete_ai_quiz_soft_deletes_and_is_owner_only(db_session, monkeyp
         instruction="x",
         topic=None,
         question_count=2,
+        topic_category_id=None,
         current_user=owner,
         db=db_session,
     )
@@ -271,6 +280,7 @@ async def test_other_user_cannot_start_quiz_on_someone_elses_private_category(db
         instruction="x",
         topic=None,
         question_count=2,
+        topic_category_id=None,
         current_user=owner,
         db=db_session,
     )
@@ -297,6 +307,7 @@ async def test_private_ai_categories_never_appear_in_public_categories_list(db_s
         instruction="x",
         topic=None,
         question_count=2,
+        topic_category_id=None,
         current_user=user,
         db=db_session,
     )
@@ -422,3 +433,100 @@ async def test_list_user_quizzes_owner_sees_everything_on_own_page(db_session):
 
     result = await list_user_quizzes(user_id=owner.id, current_user=owner, db=db_session)
     assert len(result) == 2
+
+
+# --- topic_category_id (Discover kategoriya filtri, 2026-08-28) ---
+
+
+async def _create_official_category(db, name="Tarix") -> Category:
+    category = Category(name=name, icon_name="sparkle", color_key="coral", is_active=True, owner_user_id=None)
+    db.add(category)
+    await db.commit()
+    await db.refresh(category)
+    return category
+
+
+@pytest.mark.anyio
+async def test_manual_quiz_can_be_created_with_a_topic_category(db_session):
+    user = await _create_user(db_session)
+    topic = await _create_official_category(db_session, "Sport")
+
+    result = await create_manual_quiz(
+        payload=ManualQuizCreate(
+            name="Futbol savollari",
+            questions=_manual_payload().questions,
+            topic_category_id=topic.id,
+        ),
+        current_user=user,
+        db=db_session,
+    )
+
+    assert result.topic_category_id == topic.id
+    assert result.topic_category_name == "Sport"
+
+
+@pytest.mark.anyio
+async def test_manual_quiz_rejects_a_private_category_as_topic(db_session):
+    user = await _create_user(db_session)
+    someone_elses_quiz = await create_manual_quiz(payload=_manual_payload("Boshqa"), current_user=await _create_user(db_session, "other@example.com"), db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_manual_quiz(
+            payload=ManualQuizCreate(
+                name="Yangi",
+                questions=_manual_payload().questions,
+                # Boshqa foydalanuvchining OWN quizi - global kategoriya emas,
+                # mavzu sifatida ishlatib bo'lmaydi.
+                topic_category_id=someone_elses_quiz.id,
+            ),
+            current_user=user,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_manual_quiz_rejects_an_unknown_topic_category_id(db_session):
+    user = await _create_user(db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_manual_quiz(
+            payload=ManualQuizCreate(name="Yangi", questions=_manual_payload().questions, topic_category_id=999999),
+            current_user=user,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_update_quiz_topic_sets_and_clears_the_topic(db_session):
+    user = await _create_user(db_session)
+    topic = await _create_official_category(db_session, "Fan")
+    created = await create_manual_quiz(payload=_manual_payload(), current_user=user, db=db_session)
+    assert created.topic_category_id is None
+
+    updated = await update_quiz_topic(
+        quiz_id=created.id, payload=TopicUpdate(topic_category_id=topic.id), current_user=user, db=db_session
+    )
+    assert updated.topic_category_id == topic.id
+    assert updated.topic_category_name == "Fan"
+
+    cleared = await update_quiz_topic(
+        quiz_id=created.id, payload=TopicUpdate(topic_category_id=None), current_user=user, db=db_session
+    )
+    assert cleared.topic_category_id is None
+    assert cleared.topic_category_name is None
+
+
+@pytest.mark.anyio
+async def test_update_quiz_topic_is_owner_only(db_session):
+    owner = await _create_user(db_session, "topic_owner@example.com")
+    stranger = await _create_user(db_session, "topic_stranger@example.com")
+    topic = await _create_official_category(db_session, "Til")
+    created = await create_manual_quiz(payload=_manual_payload(), current_user=owner, db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_quiz_topic(
+            quiz_id=created.id, payload=TopicUpdate(topic_category_id=topic.id), current_user=stranger, db=db_session
+        )
+    assert exc_info.value.status_code == 404

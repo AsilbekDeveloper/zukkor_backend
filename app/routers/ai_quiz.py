@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.friendship import Friendship
 from app.models.quiz import Category, Question
 from app.models.user import User
-from app.schemas.ai_quiz import AiQuizOut, DiscoverQuizOut, ManualQuizCreate, VisibilityUpdate
+from app.schemas.ai_quiz import AiQuizOut, DiscoverQuizOut, ManualQuizCreate, TopicUpdate, VisibilityUpdate
 from app.services.ai_quiz_generation import QuizGenerationError, _validate_questions, generate_questions, generate_questions_from_topic
 from app.services.document_text import UnsupportedDocumentError, extract_text
 from app.services.quiz_access import can_access_category, is_friend
@@ -20,6 +21,23 @@ DEFAULT_QUESTION_COUNT = 10
 MAX_QUESTION_COUNT = 20
 MAX_TOPIC_LENGTH = 300
 VALID_VISIBILITIES = {"private", "friends", "public"}
+
+# Ro'yxat/Discover so'rovlarida quiz'ning mavzu-kategoriyasi nomini bitta
+# JOIN bilan olish uchun - har bir qatorga alohida so'rov yubormaslik uchun.
+TopicCategory = aliased(Category)
+
+
+async def _resolve_topic_category(db: AsyncSession, topic_category_id: int | None) -> str | None:
+    """`topic_category_id` haqiqatan ham faol, global (owner_user_id=NULL)
+    kategoriyaga ishora qilishini tekshiradi va nomini qaytaradi - yaratish/
+    yangilashda validatsiya UCHUN HAM, javobda ko'rsatiladigan nomni olish
+    UCHUN HAM shu bitta funksiya ishlatiladi."""
+    if topic_category_id is None:
+        return None
+    topic = await db.get(Category, topic_category_id)
+    if topic is None or topic.owner_user_id is not None or not topic.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Noto'g'ri mavzu-kategoriya")
+    return topic.name
 
 
 async def _read_limited(upload: UploadFile, max_bytes: int) -> bytes:
@@ -60,6 +78,7 @@ async def generate_ai_quiz(
     instruction: str | None = Form(None),
     topic: str | None = Form(None),
     question_count: int = Form(DEFAULT_QUESTION_COUNT),
+    topic_category_id: int | None = Form(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -67,6 +86,9 @@ async def generate_ai_quiz(
     instruction_clean = (instruction or "").strip()
     topic_clean = (topic or "").strip()[:MAX_TOPIC_LENGTH]
     has_file = file is not None and bool(file.filename)
+    # Generatsiyadan OLDIN tekshiramiz - noto'g'ri mavzu-kategoriya bilan
+    # Gemini'ga bekorga pul/vaqt sarflanmasin.
+    topic_category_name = await _resolve_topic_category(db, topic_category_id)
 
     if not has_file and not topic_clean:
         raise HTTPException(
@@ -108,6 +130,7 @@ async def generate_ai_quiz(
         owner_user_id=current_user.id,
         source=source,
         visibility="private",
+        topic_category_id=topic_category_id,
     )
     db.add(category)
     await db.flush()
@@ -132,6 +155,8 @@ async def generate_ai_quiz(
         created_at=category.created_at.isoformat(),
         source=category.source,
         visibility=category.visibility,
+        topic_category_id=category.topic_category_id,
+        topic_category_name=topic_category_name,
     )
 
 
@@ -155,6 +180,8 @@ async def create_manual_quiz(
     if not validated:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Kamida bitta to'g'ri to'ldirilgan savol kerak")
 
+    topic_category_name = await _resolve_topic_category(db, payload.topic_category_id)
+
     category = Category(
         name=name,
         icon_name="sparkle",
@@ -163,6 +190,7 @@ async def create_manual_quiz(
         owner_user_id=current_user.id,
         source="manual",
         visibility="private",
+        topic_category_id=payload.topic_category_id,
     )
     db.add(category)
     await db.flush()
@@ -187,6 +215,8 @@ async def create_manual_quiz(
         created_at=category.created_at.isoformat(),
         source=category.source,
         visibility=category.visibility,
+        topic_category_id=category.topic_category_id,
+        topic_category_name=topic_category_name,
     )
 
 
@@ -211,6 +241,7 @@ async def update_quiz_visibility(
     question_count_result = await db.execute(
         select(func.count()).select_from(Question).where(Question.category_id == category.id, Question.is_active.is_(True))
     )
+    topic_category_name = await _resolve_topic_category(db, category.topic_category_id)
     return AiQuizOut(
         id=category.id,
         name=category.name,
@@ -218,6 +249,39 @@ async def update_quiz_visibility(
         created_at=category.created_at.isoformat(),
         source=category.source,
         visibility=category.visibility,
+        topic_category_id=category.topic_category_id,
+        topic_category_name=topic_category_name,
+    )
+
+
+@router.patch("/{quiz_id}/topic", response_model=AiQuizOut, summary="Quiz mavzu-kategoriyasini o'zgartirish")
+async def update_quiz_topic(
+    quiz_id: int,
+    payload: TopicUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    category = await db.get(Category, quiz_id)
+    if category is None or category.owner_user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topilmadi")
+
+    topic_category_name = await _resolve_topic_category(db, payload.topic_category_id)
+    category.topic_category_id = payload.topic_category_id
+    await db.commit()
+    await db.refresh(category)
+
+    question_count_result = await db.execute(
+        select(func.count()).select_from(Question).where(Question.category_id == category.id, Question.is_active.is_(True))
+    )
+    return AiQuizOut(
+        id=category.id,
+        name=category.name,
+        question_count=question_count_result.scalar_one(),
+        created_at=category.created_at.isoformat(),
+        source=category.source,
+        visibility=category.visibility,
+        topic_category_id=category.topic_category_id,
+        topic_category_name=topic_category_name,
     )
 
 
@@ -228,8 +292,9 @@ async def list_my_ai_quizzes(
 ):
     question_count_subq = _question_count_subquery()
     stmt = (
-        select(Category, func.coalesce(question_count_subq.c.cnt, 0))
+        select(Category, func.coalesce(question_count_subq.c.cnt, 0), TopicCategory.name)
         .outerjoin(question_count_subq, question_count_subq.c.category_id == Category.id)
+        .outerjoin(TopicCategory, TopicCategory.id == Category.topic_category_id)
         .where(Category.owner_user_id == current_user.id, Category.is_active.is_(True))
         .order_by(Category.created_at.desc())
     )
@@ -242,8 +307,10 @@ async def list_my_ai_quizzes(
             created_at=category.created_at.isoformat(),
             source=category.source,
             visibility=category.visibility,
+            topic_category_id=category.topic_category_id,
+            topic_category_name=topic_name,
         )
-        for category, question_count in result.all()
+        for category, question_count, topic_name in result.all()
     ]
 
 
@@ -271,9 +338,10 @@ def _discover_visibility_filter(current_user_id: str):
 async def _run_discover_query(db: AsyncSession, extra_filter=None):
     question_count_subq = _question_count_subquery()
     stmt = (
-        select(Category, func.coalesce(question_count_subq.c.cnt, 0), User)
+        select(Category, func.coalesce(question_count_subq.c.cnt, 0), User, TopicCategory.name)
         .join(User, User.id == Category.owner_user_id)
         .outerjoin(question_count_subq, question_count_subq.c.category_id == Category.id)
+        .outerjoin(TopicCategory, TopicCategory.id == Category.topic_category_id)
         .order_by(Category.created_at.desc())
         .limit(DISCOVER_LIMIT)
     )
@@ -288,10 +356,12 @@ async def _run_discover_query(db: AsyncSession, extra_filter=None):
             created_at=category.created_at.isoformat(),
             source=category.source,
             visibility=category.visibility,
+            topic_category_id=category.topic_category_id,
+            topic_category_name=topic_name,
             owner_user_id=owner.id,
             owner_username=owner.username,
         )
-        for category, question_count, owner in result.all()
+        for category, question_count, owner, topic_name in result.all()
     ]
 
 
@@ -301,10 +371,14 @@ async def _run_discover_query(db: AsyncSession, extra_filter=None):
     summary="Boshqalarning ochiq/do'stlar quizlari (feed)",
 )
 async def discover_quizzes(
+    category_id: int | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return await _run_discover_query(db, _discover_visibility_filter(current_user.id))
+    quiz_filter = _discover_visibility_filter(current_user.id)
+    if category_id is not None:
+        quiz_filter = and_(quiz_filter, Category.topic_category_id == category_id)
+    return await _run_discover_query(db, quiz_filter)
 
 
 @router.get(
@@ -314,15 +388,17 @@ async def discover_quizzes(
 )
 async def search_discover_quizzes(
     q: str,
+    category_id: int | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     query = q.strip()
     if not query:
         return []
-    return await _run_discover_query(
-        db, and_(_discover_visibility_filter(current_user.id), Category.name.ilike(f"%{query}%"))
-    )
+    quiz_filter = and_(_discover_visibility_filter(current_user.id), Category.name.ilike(f"%{query}%"))
+    if category_id is not None:
+        quiz_filter = and_(quiz_filter, Category.topic_category_id == category_id)
+    return await _run_discover_query(db, quiz_filter)
 
 
 @router.get("/users/{user_id}", response_model=list[AiQuizOut], summary="Boshqa foydalanuvchining ko'rinadigan quizlari")
@@ -347,8 +423,9 @@ async def list_user_quizzes(
 
     question_count_subq = _question_count_subquery()
     stmt = (
-        select(Category, func.coalesce(question_count_subq.c.cnt, 0))
+        select(Category, func.coalesce(question_count_subq.c.cnt, 0), TopicCategory.name)
         .outerjoin(question_count_subq, question_count_subq.c.category_id == Category.id)
+        .outerjoin(TopicCategory, TopicCategory.id == Category.topic_category_id)
         .where(Category.owner_user_id == user_id, Category.is_active.is_(True))
         .order_by(Category.created_at.desc())
     )
@@ -364,8 +441,10 @@ async def list_user_quizzes(
             created_at=category.created_at.isoformat(),
             source=category.source,
             visibility=category.visibility,
+            topic_category_id=category.topic_category_id,
+            topic_category_name=topic_name,
         )
-        for category, question_count in result.all()
+        for category, question_count, topic_name in result.all()
     ]
 
 

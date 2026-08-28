@@ -36,6 +36,19 @@ class Category(Base):
     # uchun. Global kategoriyalarda 'admin'.
     source: Mapped[str] = mapped_column(String(20), default="admin")
 
+    # Faqat owner_user_id borlarga daxldor (foydalanuvchi quizi) - o'zi
+    # o'chirilmagan bitta global kategoriyaga (owner_user_id IS NULL)
+    # ishora qiladi, Discover'da mavzu bo'yicha filtrlash uchun. Global
+    # kategoriyalarning o'ziga bu maydon kerak emas - ular allaqachon
+    # mavzuning o'zi. NULL bo'lishi mumkin - eski quizlar (bu maydon
+    # qo'shilishidan oldin yaratilgan) va foydalanuvchi hali mavzu
+    # tanlamagan hollar uchun; Discover'da bunday quizlar hech qaysi
+    # mavzu filtriga tushmaydi, lekin "hammasi" ro'yxatida ko'rinaveradi.
+    topic_category_id: Mapped[int | None] = mapped_column(
+        ForeignKey("categories.id", ondelete="SET NULL"), nullable=True
+    )
+    topic_category: Mapped["Category | None"] = relationship(remote_side=[id])
+
     def __str__(self) -> str:
         # SQLAdmin'ning bog'liq obyekt tanlagichi (masalan "New Savol"
         # formasidagi Category dropdown) buni chaqiradi - bo'lmasa xom
