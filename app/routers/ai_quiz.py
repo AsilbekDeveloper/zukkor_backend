@@ -1,12 +1,13 @@
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
+from app.models.friendship import Friendship
 from app.models.quiz import Category, Question
 from app.models.user import User
-from app.schemas.ai_quiz import AiQuizOut, ManualQuizCreate, VisibilityUpdate
+from app.schemas.ai_quiz import AiQuizOut, DiscoverQuizOut, ManualQuizCreate, VisibilityUpdate
 from app.services.ai_quiz_generation import QuizGenerationError, _validate_questions, generate_questions, generate_questions_from_topic
 from app.services.document_text import UnsupportedDocumentError, extract_text
 from app.services.quiz_access import can_access_category, is_friend
@@ -244,6 +245,84 @@ async def list_my_ai_quizzes(
         )
         for category, question_count in result.all()
     ]
+
+
+DISCOVER_LIMIT = 100
+
+
+def _discover_visibility_filter(current_user_id: str):
+    """A quiz shows up in Discover if it's public, or if it's
+    friends-only and its owner is actually a friend of the viewer - never
+    the viewer's own quizzes (those live in "Mening quizlarim" already),
+    never a private one, and never a global (owner_user_id is None)
+    category (Discover is specifically for OTHER USERS' quizzes)."""
+    friend_ids_subq = select(Friendship.friend_id).where(Friendship.user_id == current_user_id)
+    return and_(
+        Category.owner_user_id.is_not(None),
+        Category.owner_user_id != current_user_id,
+        Category.is_active.is_(True),
+        or_(
+            Category.visibility == "public",
+            and_(Category.visibility == "friends", Category.owner_user_id.in_(friend_ids_subq)),
+        ),
+    )
+
+
+async def _run_discover_query(db: AsyncSession, extra_filter=None):
+    question_count_subq = _question_count_subquery()
+    stmt = (
+        select(Category, func.coalesce(question_count_subq.c.cnt, 0), User)
+        .join(User, User.id == Category.owner_user_id)
+        .outerjoin(question_count_subq, question_count_subq.c.category_id == Category.id)
+        .order_by(Category.created_at.desc())
+        .limit(DISCOVER_LIMIT)
+    )
+    if extra_filter is not None:
+        stmt = stmt.where(extra_filter)
+    result = await db.execute(stmt)
+    return [
+        DiscoverQuizOut(
+            id=category.id,
+            name=category.name,
+            question_count=question_count,
+            created_at=category.created_at.isoformat(),
+            source=category.source,
+            visibility=category.visibility,
+            owner_user_id=owner.id,
+            owner_username=owner.username,
+        )
+        for category, question_count, owner in result.all()
+    ]
+
+
+@router.get(
+    "/discover",
+    response_model=list[DiscoverQuizOut],
+    summary="Boshqalarning ochiq/do'stlar quizlari (feed)",
+)
+async def discover_quizzes(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return await _run_discover_query(db, _discover_visibility_filter(current_user.id))
+
+
+@router.get(
+    "/discover/search",
+    response_model=list[DiscoverQuizOut],
+    summary="Discover ichida quiz nomi bo'yicha qidirish",
+)
+async def search_discover_quizzes(
+    q: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    query = q.strip()
+    if not query:
+        return []
+    return await _run_discover_query(
+        db, and_(_discover_visibility_filter(current_user.id), Category.name.ilike(f"%{query}%"))
+    )
 
 
 @router.get("/users/{user_id}", response_model=list[AiQuizOut], summary="Boshqa foydalanuvchining ko'rinadigan quizlari")

@@ -10,6 +10,16 @@ class AiQuizOut(BaseModel):
     visibility: str  # 'private' | 'friends' | 'public'
 
 
+class DiscoverQuizOut(AiQuizOut):
+    """Same shape as [AiQuizOut] plus who made it - needed once a listing
+    (Discover feed/search) can mix quizzes from many different owners,
+    unlike "my quizzes" or "this one user's quizzes" where the owner is
+    already implied by which endpoint you called."""
+
+    owner_user_id: str
+    owner_username: str | None
+
+
 class ManualQuestionIn(BaseModel):
     question_text: str
     options: list[str]
