@@ -1,4 +1,6 @@
 import asyncio
+import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
@@ -18,6 +20,36 @@ from app.services.ws_auth import authenticate_ws_connection
 from app.services.ws_manager import manager
 
 router = APIRouter()
+
+# Duel taklifi spam-ga qarshi himoya - IP emas, user_id bo'yicha, xotirada
+# saqlanadigan hisoblagich (app/admin.py'dagi login-lockout bilan bir xil
+# naqsh - bitta backend instansiyasi uchun yetarli).
+_MAX_INVITES_PER_MINUTE = 2
+_INVITE_WINDOW_SECONDS = 60.0
+_DECLINE_COOLDOWN_SECONDS = 5 * 60.0
+
+_invite_timestamps: dict[str, list[float]] = defaultdict(list)
+_decline_cooldown_until: dict[tuple[str, str], float] = {}
+
+
+def _is_invite_rate_limited(from_user_id: str) -> bool:
+    cutoff = time.monotonic() - _INVITE_WINDOW_SECONDS
+    recent = [t for t in _invite_timestamps[from_user_id] if t > cutoff]
+    _invite_timestamps[from_user_id] = recent
+    return len(recent) >= _MAX_INVITES_PER_MINUTE
+
+
+def _record_invite_sent(from_user_id: str) -> None:
+    _invite_timestamps[from_user_id].append(time.monotonic())
+
+
+def _is_in_decline_cooldown(from_user_id: str, to_user_id: str) -> bool:
+    until = _decline_cooldown_until.get((from_user_id, to_user_id))
+    return until is not None and time.monotonic() < until
+
+
+def _start_decline_cooldown(from_user_id: str, to_user_id: str) -> None:
+    _decline_cooldown_until[(from_user_id, to_user_id)] = time.monotonic() + _DECLINE_COOLDOWN_SECONDS
 
 
 def _user_public(user: User) -> dict:
@@ -88,6 +120,26 @@ async def _handle_duel_invite(user: User, data: dict, websocket: WebSocket) -> N
         await websocket.send_json({"type": "error", "detail": "duel_invite: maydonlar to'liq emas"})
         return
 
+    if _is_invite_rate_limited(user.id):
+        await websocket.send_json(
+            {
+                "type": "error",
+                "detail": "Juda ko'p duel taklifi yubordingiz, biroz kutib qayta urinib ko'ring",
+                "client_invite_id": client_invite_id,
+            }
+        )
+        return
+
+    if _is_in_decline_cooldown(user.id, to_user_id):
+        await websocket.send_json(
+            {
+                "type": "error",
+                "detail": "Bu foydalanuvchi taklifingizni yaqinda rad etdi, birozdan keyin qayta urinib ko'ring",
+                "client_invite_id": client_invite_id,
+            }
+        )
+        return
+
     if question_count is not None:
         if not isinstance(question_count, int) or question_count < 1:
             await websocket.send_json(
@@ -130,6 +182,7 @@ async def _handle_duel_invite(user: User, data: dict, websocket: WebSocket) -> N
         db.add(Notification(user_id=to_user_id, kind="duel_challenge", related_user_id=user.id))
         await db.commit()
         await db.refresh(invite)
+        _record_invite_sent(user.id)
 
         to_user = await db.get(User, to_user_id)
         if to_user is not None and to_user.duel_invites:
@@ -178,6 +231,9 @@ async def _handle_duel_invite_respond(user: User, data: dict, websocket: WebSock
         invite.status = "accepted" if accept else "declined"
         invite.responded_at = now
         await db.commit()
+
+        if not accept:
+            _start_decline_cooldown(invite.from_user_id, user.id)
 
         responder_public = _user_public(user)
         from_user_id = invite.from_user_id

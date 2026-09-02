@@ -1,8 +1,12 @@
+import asyncio
+import logging
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
+from app.core.database import AsyncSessionLocal, get_db
 from app.dependencies.auth import get_current_user
 from app.models.notification import Notification
 from app.models.user import User
@@ -10,6 +14,31 @@ from app.schemas.notifications import NotificationEntryOut, NotificationsOut
 from app.services.display_name import display_name
 
 router = APIRouter()
+
+logger = logging.getLogger("zukkor.notifications")
+
+_CLEANUP_INTERVAL_SECONDS = 24 * 60 * 60  # kuniga bir marta yetarli
+_NOTIFICATION_RETENTION_DAYS = 30
+
+
+async def _cleanup_old_notifications_once() -> None:
+    async with AsyncSessionLocal() as db:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=_NOTIFICATION_RETENTION_DAYS)
+        await db.execute(delete(Notification).where(Notification.created_at < cutoff))
+        await db.commit()
+
+
+async def cleanup_old_notifications_loop() -> None:
+    """Fon rejimida - har kuni 30 kundan eski bildirishnomalarni o'chiradi.
+    `GET /notifications` allaqachon `limit`ga ega (hech qachon butun
+    jadvalni qaytarmaydi), shuning uchun bu tezlik uchun emas - vaqt
+    o'tishi bilan jadval abadiy o'sib ketmasligi uchun."""
+    while True:
+        try:
+            await _cleanup_old_notifications_once()
+        except Exception:
+            logger.exception("Eski bildirishnomalarni tozalashda xatolik")
+        await asyncio.sleep(_CLEANUP_INTERVAL_SECONDS)
 
 
 @router.get("", response_model=NotificationsOut, summary="Bildirishnomalar ro'yxati")

@@ -40,8 +40,10 @@ async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     expiry_task = asyncio.create_task(duel_ws.expire_duel_invites_loop())
+    notification_cleanup_task = asyncio.create_task(notifications.cleanup_old_notifications_loop())
     yield
     expiry_task.cancel()
+    notification_cleanup_task.cancel()
 
 
 app = FastAPI(
