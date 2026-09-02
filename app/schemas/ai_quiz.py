@@ -44,3 +44,14 @@ class TopicUpdate(BaseModel):
     # None - mavzu tayinlashni bekor qilish (Discover'da hech qaysi
     # filtrga tushmaydigan holatga qaytarish).
     topic_category_id: int | None = None
+
+
+class GenerationJobStartedOut(BaseModel):
+    job_id: str
+
+
+class GenerationJobOut(BaseModel):
+    job_id: str
+    status: str  # 'pending' | 'completed' | 'failed'
+    quiz: AiQuizOut | None = None
+    error: str | None = None

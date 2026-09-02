@@ -1,19 +1,34 @@
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+import logging
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from app.core.database import get_db
+from app.core.database import AsyncSessionLocal, get_db
 from app.dependencies.auth import get_current_user
+from app.models.ai_quiz_job import AiQuizGenerationJob
 from app.models.friendship import Friendship
 from app.models.quiz import Category, Question
 from app.models.user import User
-from app.schemas.ai_quiz import AiQuizOut, DiscoverQuizOut, ManualQuizCreate, TopicUpdate, VisibilityUpdate
+from app.schemas.ai_quiz import (
+    AiQuizOut,
+    DiscoverQuizOut,
+    GenerationJobOut,
+    GenerationJobStartedOut,
+    ManualQuizCreate,
+    TopicUpdate,
+    VisibilityUpdate,
+)
 from app.services.ai_quiz_generation import QuizGenerationError, _validate_questions, generate_questions, generate_questions_from_topic
 from app.services.document_text import UnsupportedDocumentError, extract_text
+from app.services.push import send_push_to_user
 from app.services.quiz_access import can_access_category, is_friend
 
 router = APIRouter()
+
+logger = logging.getLogger("zukkor.ai_quiz_jobs")
 
 MAX_UPLOAD_SIZE_BYTES = 15 * 1024 * 1024  # 15MB - kitob uchun yetarli
 _UPLOAD_READ_CHUNK_BYTES = 256 * 1024
@@ -158,6 +173,190 @@ async def generate_ai_quiz(
         topic_category_id=category.topic_category_id,
         topic_category_name=topic_category_name,
     )
+
+
+async def _run_generation_job(
+    job_id: str,
+    user_id: str,
+    *,
+    file_bytes: bytes | None,
+    filename: str | None,
+    instruction: str,
+    topic: str,
+    question_count: int,
+    topic_category_id: int | None,
+) -> None:
+    """Fon vazifasi (BackgroundTasks) - so'rov allaqachon 202 bilan
+    qaytgandan KEYIN ishga tushadi, shuning uchun request-scoped `db`dan
+    foydalana olmaydi, o'zining AsyncSessionLocal'ini ochadi (xuddi
+    `duel_engine.forfeit_duel` va boshqa fon vazifalari kabi)."""
+    async with AsyncSessionLocal() as db:
+        job = await db.get(AiQuizGenerationJob, job_id)
+        if job is None:
+            return
+
+        try:
+            if file_bytes is not None:
+                try:
+                    text = extract_text(filename or "", file_bytes)
+                except UnsupportedDocumentError as exc:
+                    raise QuizGenerationError(str(exc)) from exc
+                if not text.strip():
+                    raise QuizGenerationError("Hujjatdan matn topilmadi")
+
+                questions = await generate_questions(text, instruction, question_count)
+                title = (filename or "AI Quiz").rsplit(".", 1)[0][:50] or "AI Quiz"
+                source = "ai_document"
+            else:
+                questions = await generate_questions_from_topic(topic, instruction, question_count)
+                title = topic[:50] or "AI Quiz"
+                source = "ai_topic"
+
+            category = Category(
+                name=title,
+                icon_name="sparkle",
+                color_key="coral",
+                is_active=True,
+                owner_user_id=user_id,
+                source=source,
+                visibility="private",
+                topic_category_id=topic_category_id,
+            )
+            db.add(category)
+            await db.flush()
+
+            for q in questions:
+                db.add(
+                    Question(
+                        category_id=category.id,
+                        question_text=q["question_text"],
+                        options=q["options"],
+                        correct_option_index=q["correct_option_index"],
+                        is_active=True,
+                    )
+                )
+
+            job.status = "completed"
+            job.category_id = category.id
+            job.finished_at = datetime.now(timezone.utc)
+            await db.commit()
+
+            await send_push_to_user(
+                db, user_id, "Quiz tayyor!", f"“{title}” testi tayyor bo'ldi - o'ynash uchun bosing"
+            )
+        except QuizGenerationError as exc:
+            job.status = "failed"
+            job.error_message = str(exc)[:300]
+            job.finished_at = datetime.now(timezone.utc)
+            await db.commit()
+            await send_push_to_user(db, user_id, "Quiz yaratib bo'lmadi", str(exc)[:150])
+        except Exception:
+            # Kutilmagan xato (masalan tarmoq uzilishi) - job'ni "failed"
+            # deb belgilaymiz, aks holda foydalanuvchi "pending" holatida
+            # abadiy kutib qoladi.
+            logger.exception("AI quiz generation job muvaffaqiyatsiz bo'ldi (job_id=%s)", job_id)
+            job.status = "failed"
+            job.error_message = "Kutilmagan xatolik yuz berdi"
+            job.finished_at = datetime.now(timezone.utc)
+            await db.commit()
+            await send_push_to_user(db, user_id, "Quiz yaratib bo'lmadi", "Kutilmagan xatolik yuz berdi")
+
+
+@router.post(
+    "/generate-async",
+    response_model=GenerationJobStartedOut,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Hujjatdan/mavzudan AI quiz generatsiyasini FON REJIMIDA boshlash",
+    description="Darhol job_id bilan qaytadi - haqiqiy generatsiya fon vazifasida ketadi, "
+    "tayyor bo'lgach push (`type: pdf_ready`) yuboriladi. Katta hujjatlar uchun (1-2 daqiqa "
+    "davom etishi mumkin) ochiq HTTP ulanishini kutishning oldini olish uchun.",
+)
+async def generate_ai_quiz_async(
+    background_tasks: BackgroundTasks,
+    file: UploadFile | None = File(None),
+    instruction: str | None = Form(None),
+    topic: str | None = Form(None),
+    question_count: int = Form(DEFAULT_QUESTION_COUNT),
+    topic_category_id: int | None = Form(None),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    question_count = max(1, min(question_count, MAX_QUESTION_COUNT))
+    instruction_clean = (instruction or "").strip()
+    topic_clean = (topic or "").strip()[:MAX_TOPIC_LENGTH]
+    has_file = file is not None and bool(file.filename)
+    # Generatsiya boshlanishidan OLDIN tekshiramiz - noto'g'ri mavzu-kategoriya
+    # bilan fon vazifasi behuda ishga tushmasin.
+    await _resolve_topic_category(db, topic_category_id)
+
+    if not has_file and not topic_clean:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Hujjat yuklang yoki mavzu kiriting")
+
+    file_bytes: bytes | None = None
+    filename: str | None = None
+    if has_file:
+        assert file is not None
+        file_bytes = await _read_limited(file, MAX_UPLOAD_SIZE_BYTES)
+        filename = file.filename
+
+    job = AiQuizGenerationJob(user_id=current_user.id, status="pending", question_count=question_count)
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    background_tasks.add_task(
+        _run_generation_job,
+        job.id,
+        current_user.id,
+        file_bytes=file_bytes,
+        filename=filename,
+        instruction=instruction_clean,
+        topic=topic_clean,
+        question_count=question_count,
+        topic_category_id=topic_category_id,
+    )
+
+    return GenerationJobStartedOut(job_id=job.id)
+
+
+@router.get(
+    "/generate-async/{job_id}",
+    response_model=GenerationJobOut,
+    summary="Fon rejimidagi AI quiz generatsiyasi holatini so'rash",
+    description="Asosiy yo'l - push xabarini kutish; bu endpoint faqat push kelmasa "
+    "(masalan ruxsat berilmagan bo'lsa) yoki ekranda holatni ko'rsatib turish uchun zaxira.",
+)
+async def get_generation_job(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    job = await db.get(AiQuizGenerationJob, job_id)
+    if job is None or job.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topilmadi")
+
+    quiz_out: AiQuizOut | None = None
+    if job.status == "completed" and job.category_id is not None:
+        category = await db.get(Category, job.category_id)
+        if category is not None:
+            question_count_result = await db.execute(
+                select(func.count()).select_from(Question).where(
+                    Question.category_id == category.id, Question.is_active.is_(True)
+                )
+            )
+            topic_category_name = await _resolve_topic_category(db, category.topic_category_id)
+            quiz_out = AiQuizOut(
+                id=category.id,
+                name=category.name,
+                question_count=question_count_result.scalar_one(),
+                created_at=category.created_at.isoformat(),
+                source=category.source,
+                visibility=category.visibility,
+                topic_category_id=category.topic_category_id,
+                topic_category_name=topic_category_name,
+            )
+
+    return GenerationJobOut(job_id=job.id, status=job.status, quiz=quiz_out, error=job.error_message)
 
 
 @router.post(
