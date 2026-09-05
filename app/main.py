@@ -3,9 +3,12 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import sentry_sdk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -33,6 +36,22 @@ from app.routers import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 Path("media/avatars").mkdir(parents=True, exist_ok=True)
+
+# SENTRY_DSN bo'sh bo'lsa (hali sozlanmagan/lokal dev) hech narsa
+# yubormasdan jim o'tkazib yuboriladi - boshqa ixtiyoriy integratsiyalar
+# (Gemini, R2, SMTP) kabi. `logger.exception(...)` chaqiruvlari kodning
+# turli joylarida (masalan `ai_quiz_generation.py`) allaqachon mavjud -
+# sentry-sdk'ning standart logging integratsiyasi ERROR darajadagi
+# log yozuvlarini avtomatik Sentry hodisasiga aylantiradi, alohida
+# `sentry_sdk.capture_exception(...)` chaqiruvlari qo'shishga hojat yo'q.
+if settings.SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        environment=settings.ENVIRONMENT,
+        integrations=[StarletteIntegration(), FastApiIntegration()],
+        traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
+        send_default_pii=False,
+    )
 
 
 @asynccontextmanager

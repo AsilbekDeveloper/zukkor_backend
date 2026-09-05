@@ -56,6 +56,20 @@ class Settings(BaseSettings):
     # Bo'sh qoldirilsa SMTP_USERNAME'ning o'zi ishlatiladi.
     SMTP_FROM_EMAIL: str = ""
 
+    # Sentry — backend xatolarini kuzatish uchun (https://sentry.io). Bo'sh
+    # bo'lsa ilova baribir ishga tushadi, shunchaki hech narsa yubormaydi -
+    # R2/Gemini/SMTP kabi, hali sozlanmagan bo'lsa ham dev/deploy to'xtab
+    # qolmasin deb.
+    SENTRY_DSN: str = ""
+    # Har bir so'rovni emas, faqat shu foizini "performance" trace sifatida
+    # yuboradi - xatolarni ushlash uchun bu shart emas, lekin kvota/xarajatni
+    # tejaydi. Xatolarning o'zi (capture_exception/logger.exception) bu
+    # sozlamadan mustaqil ravishda har doim to'liq yuboriladi.
+    SENTRY_TRACES_SAMPLE_RATE: float = 0.1
+    # Qaysi muhitdan yuborilganini Sentry'da ajratish uchun (masalan
+    # production/staging) - Railway environment variable orqali o'rnatiladi.
+    ENVIRONMENT: str = "production"
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("DATABASE_URL")
