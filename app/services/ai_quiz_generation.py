@@ -1,36 +1,16 @@
 """Foydalanuvchi yuklagan hujjat matnidan yoki mavzudan Gemini Interactions
 API orqali quiz savollari generatsiya qilish."""
 
-import asyncio
 import json
 import logging
 
-import httpx
-
-from app.core.config import settings
+from app.services.gemini_client import GeminiCallError, call_gemini
 
 logger = logging.getLogger("zukkor.ai_quiz")
-
-# 2026-08-12: eski `generateContent` endpoint (gemini-2.0-flash, keyin
-# gemini-2.5-flash) yangi API kalitlar/loyihalar uchun butunlay yopilgan
-# ("no longer available to new users") - Google buni yangi Interactions
-# API'ga almashtirgan. gemini-3.6-flash - hozirgi barqaror (GA) va yangi
-# foydalanuvchilarga ochiq model.
-_GEMINI_MODEL = "gemini-3.6-flash"
-_INTERACTIONS_API_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
 # Juda uzun hujjat (masalan butun kitob) uchun ham xarajat/vaqtni chegaralash -
 # bu miqdor odatiy kitoblarning katta qismini qamrab oladi.
 _MAX_SOURCE_TEXT_CHARS = 200_000
-
-# Gemini vaqti-vaqti bilan vaqtinchalik xato qaytaradi (tarmoq uzilishi,
-# 429 kvota-limit, yoki 5xx server xatosi) - bunday hollarda darhol
-# foydalanuvchiga xato ko'rsatish o'rniga bir necha marta eksponensial
-# kutish bilan qayta urinamiz. 400/401/403/404 kabi mijoz xatolari esa
-# qayta urinishda ham o'zgarmaydi, shuning uchun ular darhol ko'tariladi.
-_MAX_ATTEMPTS = 4  # dastlabki urinish + 3 ta qayta urinish
-_RETRY_BASE_DELAY_SECONDS = 1.5
-_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 # Interactions API standart JSON Schema (kichik harfli type nomlari)
 # ishlatadi - eski generateContent'ning ARRAY/OBJECT/STRING kabi
@@ -53,86 +33,15 @@ class QuizGenerationError(Exception):
     """AI orqali quiz generatsiya qilib bo'lmadi (sozlanmagan, tarmoq xatosi, yoki natija yaroqsiz)."""
 
 
-def _extract_gemini_error_message(response: httpx.Response) -> str | None:
-    # Gemini xato javobi odatda {"error": {"code":..., "message":..., "status":...}}
-    # shaklida keladi - buni foydalanuvchiga ko'rsatilsa, muammoni tezroq
-    # aniqlash mumkin (masalan "model not found" yoki kvota tugashi).
-    try:
-        message = response.json()["error"]["message"]
-    except (KeyError, ValueError, TypeError):
-        return None
-    return str(message)[:300] if message else None
-
-
 async def _call_gemini(prompt: str, *, use_search: bool) -> str:
-    if not settings.GEMINI_API_KEY:
-        raise QuizGenerationError("AI xizmati hozircha sozlanmagan")
-
-    payload: dict = {
-        "model": _GEMINI_MODEL,
-        "input": prompt,
-        "response_format": {
-            "type": "text",
-            "mime_type": "application/json",
-            "schema": _RESPONSE_SCHEMA,
-        },
-    }
-    # Interactions API'da (eski generateContent'dan farqli) qidiruv
-    # grounding'i va structured JSON chiqishini bitta so'rovda birga
-    # ishlatish mumkin.
-    if use_search:
-        payload["tools"] = [{"type": "google_search"}]
-
-    response: httpx.Response | None = None
-    for attempt in range(_MAX_ATTEMPTS):
-        is_last_attempt = attempt == _MAX_ATTEMPTS - 1
-        try:
-            async with httpx.AsyncClient(timeout=90) as client:
-                response = await client.post(
-                    _INTERACTIONS_API_URL,
-                    headers={"x-goog-api-key": settings.GEMINI_API_KEY},
-                    json=payload,
-                )
-        except httpx.HTTPError as exc:
-            if is_last_attempt:
-                logger.exception("Gemini'ga so'rov yuborishda xatolik")
-                raise QuizGenerationError("AI xizmatiga ulanib bo'lmadi") from exc
-            logger.warning(
-                "Gemini'ga ulanishda xatolik (urinish %s/%s), qayta urinilmoqda: %s",
-                attempt + 1, _MAX_ATTEMPTS, exc,
-            )
-            await asyncio.sleep(_RETRY_BASE_DELAY_SECONDS * (2**attempt))
-            continue
-
-        if response.status_code in _RETRYABLE_STATUS_CODES and not is_last_attempt:
-            logger.warning(
-                "Gemini vaqtinchalik xato qaytardi (%s, urinish %s/%s), qayta urinilmoqda",
-                response.status_code, attempt + 1, _MAX_ATTEMPTS,
-            )
-            await asyncio.sleep(_RETRY_BASE_DELAY_SECONDS * (2**attempt))
-            continue
-
-        break
-
-    if response.status_code >= 300:
-        logger.error("Gemini xato qaytardi: %s %s", response.status_code, response.text)
-        detail = _extract_gemini_error_message(response)
-        raise QuizGenerationError(f"AI savollarni tayyorlay olmadi ({detail})" if detail else "AI savollarni tayyorlay olmadi")
-
+    # Past-darajali so'rov/retry/xato-qayta-ishlash mantig'i umumiy
+    # app.services.gemini_client'da yashaydi (savol-moderatsiya kabi boshqa
+    # AI-xususiyatlar bilan baham ko'riladi) - bu yerda faqat shu modulga
+    # xos QuizGenerationError'ga o'rab qaytariladi.
     try:
-        data = response.json()
-        raw_text = next(
-            content["text"]
-            for step in data["steps"]
-            if step.get("type") == "model_output"
-            for content in step["content"]
-            if content.get("type") == "text"
-        )
-    except (KeyError, StopIteration, ValueError) as exc:
-        logger.exception("Gemini javobini o'qib bo'lmadi")
-        raise QuizGenerationError("AI javobini qayta ishlab bo'lmadi") from exc
-
-    return raw_text
+        return await call_gemini(prompt, response_schema=_RESPONSE_SCHEMA, use_search=use_search)
+    except GeminiCallError as exc:
+        raise QuizGenerationError(str(exc)) from exc
 
 
 def _parse_and_validate(raw_text: str) -> list[dict]:

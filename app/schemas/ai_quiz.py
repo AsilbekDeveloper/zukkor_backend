@@ -55,3 +55,24 @@ class GenerationJobOut(BaseModel):
     status: str  # 'pending' | 'completed' | 'failed'
     quiz: AiQuizOut | None = None
     error: str | None = None
+
+
+class QuestionSubmissionRequest(BaseModel):
+    question_text: str
+    options: list[str]
+    correct_option_index: int
+    # Ixtiyoriy - foydalanuvchi tanlamasa, AI eng mos faol kategoriyani
+    # o'zi tanlaydi. Foydalanuvchi tanlagan taqdirda ham AI buni tekshirib,
+    # noto'g'ri deb topsa boshqasiga qayta tayinlashi mumkin.
+    category_id: int | None = None
+
+
+class QuestionSubmissionResponse(BaseModel):
+    approved: bool
+    # Faqat approved=False bo'lsa to'ldiriladi - foydalanuvchiga ko'rsatish uchun.
+    rejection_reason: str | None = None
+    # Faqat approved=True bo'lsa to'ldiriladi - savol qaysi kategoriyaga
+    # qo'shilgani (foydalanuvchi tanlagani bilan bir xil bo'lmasligi mumkin).
+    category_id: int | None = None
+    category_name: str | None = None
+    question_id: int | None = None

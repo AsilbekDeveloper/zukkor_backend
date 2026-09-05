@@ -10,6 +10,7 @@ from sqladmin import ModelView
 from sqladmin.authentication import AuthenticationBackend
 
 from app.core.config import settings
+from app.models.question_submission import QuestionSubmission
 from app.models.quiz import Category, Question
 from app.models.reported_question import ReportedQuestion
 
@@ -133,3 +134,30 @@ class ReportedQuestionAdmin(ModelView, model=ReportedQuestion):
     column_sortable_list = [ReportedQuestion.id, ReportedQuestion.status, ReportedQuestion.created_at]
     column_default_sort = [(ReportedQuestion.created_at, True)]
     form_columns = [ReportedQuestion.status]
+
+
+class QuestionSubmissionAdmin(ModelView, model=QuestionSubmission):
+    """Faqat kuzatish uchun - foydalanuvchi yuborgan savollar AI tomonidan
+    so'rov paytida sinxron tasdiqlanadi/rad etiladi, admin qo'lda hech
+    narsani o'zgartirmaydi (shuning uchun to'liq read-only)."""
+
+    name = "Savol taklifi"
+    name_plural = "Foydalanuvchi savol takliflari"
+    icon = "fa-solid fa-inbox"
+
+    can_create = False
+    can_edit = False
+    can_delete = False
+
+    column_list = [
+        QuestionSubmission.id,
+        QuestionSubmission.submitter_user_id,
+        QuestionSubmission.question_text,
+        QuestionSubmission.status,
+        QuestionSubmission.resulting_category,
+        QuestionSubmission.ai_feedback,
+        QuestionSubmission.created_at,
+    ]
+    column_searchable_list = [QuestionSubmission.question_text]
+    column_sortable_list = [QuestionSubmission.id, QuestionSubmission.status, QuestionSubmission.created_at]
+    column_default_sort = [(QuestionSubmission.created_at, True)]

@@ -14,7 +14,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqladmin import Admin
 
-from app.admin import AdminAuth, CategoryAdmin, QuestionAdmin, ReportedQuestionAdmin
+from app.admin import AdminAuth, CategoryAdmin, QuestionAdmin, QuestionSubmissionAdmin, ReportedQuestionAdmin
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.core.limiter import limiter
@@ -28,6 +28,7 @@ from app.routers import (
     leaderboard,
     lobby_ws,
     notifications,
+    question_submissions,
     quiz,
     reports,
     users,
@@ -113,6 +114,7 @@ app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(categories.router, prefix="/categories", tags=["Categories"])
 app.include_router(quiz.router, prefix="/quiz", tags=["Quiz"])
 app.include_router(reports.router, prefix="/questions", tags=["Reports"])
+app.include_router(question_submissions.router, prefix="/questions", tags=["Question Submissions"])
 app.include_router(ai_quiz.router, prefix="/ai-quiz", tags=["AI Quiz"])
 app.include_router(leaderboard.router, prefix="/leaderboard", tags=["Leaderboard"])
 app.include_router(history.router, prefix="/history", tags=["History"])
@@ -130,6 +132,7 @@ admin = Admin(
 admin.add_view(CategoryAdmin)
 admin.add_view(QuestionAdmin)
 admin.add_view(ReportedQuestionAdmin)
+admin.add_view(QuestionSubmissionAdmin)
 
 
 @app.get("/", tags=["Health"], summary="API holati")
