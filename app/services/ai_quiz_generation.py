@@ -1,6 +1,7 @@
 """Foydalanuvchi yuklagan hujjat matnidan yoki mavzudan Gemini Interactions
 API orqali quiz savollari generatsiya qilish."""
 
+import asyncio
 import json
 import logging
 
@@ -21,6 +22,15 @@ _INTERACTIONS_API_URL = "https://generativelanguage.googleapis.com/v1beta/intera
 # Juda uzun hujjat (masalan butun kitob) uchun ham xarajat/vaqtni chegaralash -
 # bu miqdor odatiy kitoblarning katta qismini qamrab oladi.
 _MAX_SOURCE_TEXT_CHARS = 200_000
+
+# Gemini vaqti-vaqti bilan vaqtinchalik xato qaytaradi (tarmoq uzilishi,
+# 429 kvota-limit, yoki 5xx server xatosi) - bunday hollarda darhol
+# foydalanuvchiga xato ko'rsatish o'rniga bir necha marta eksponensial
+# kutish bilan qayta urinamiz. 400/401/403/404 kabi mijoz xatolari esa
+# qayta urinishda ham o'zgarmaydi, shuning uchun ular darhol ko'tariladi.
+_MAX_ATTEMPTS = 4  # dastlabki urinish + 3 ta qayta urinish
+_RETRY_BASE_DELAY_SECONDS = 1.5
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 # Interactions API standart JSON Schema (kichik harfli type nomlari)
 # ishlatadi - eski generateContent'ning ARRAY/OBJECT/STRING kabi
@@ -73,16 +83,36 @@ async def _call_gemini(prompt: str, *, use_search: bool) -> str:
     if use_search:
         payload["tools"] = [{"type": "google_search"}]
 
-    try:
-        async with httpx.AsyncClient(timeout=90) as client:
-            response = await client.post(
-                _INTERACTIONS_API_URL,
-                headers={"x-goog-api-key": settings.GEMINI_API_KEY},
-                json=payload,
+    response: httpx.Response | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        is_last_attempt = attempt == _MAX_ATTEMPTS - 1
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                response = await client.post(
+                    _INTERACTIONS_API_URL,
+                    headers={"x-goog-api-key": settings.GEMINI_API_KEY},
+                    json=payload,
+                )
+        except httpx.HTTPError as exc:
+            if is_last_attempt:
+                logger.exception("Gemini'ga so'rov yuborishda xatolik")
+                raise QuizGenerationError("AI xizmatiga ulanib bo'lmadi") from exc
+            logger.warning(
+                "Gemini'ga ulanishda xatolik (urinish %s/%s), qayta urinilmoqda: %s",
+                attempt + 1, _MAX_ATTEMPTS, exc,
             )
-    except httpx.HTTPError as exc:
-        logger.exception("Gemini'ga so'rov yuborishda xatolik")
-        raise QuizGenerationError("AI xizmatiga ulanib bo'lmadi") from exc
+            await asyncio.sleep(_RETRY_BASE_DELAY_SECONDS * (2**attempt))
+            continue
+
+        if response.status_code in _RETRYABLE_STATUS_CODES and not is_last_attempt:
+            logger.warning(
+                "Gemini vaqtinchalik xato qaytardi (%s, urinish %s/%s), qayta urinilmoqda",
+                response.status_code, attempt + 1, _MAX_ATTEMPTS,
+            )
+            await asyncio.sleep(_RETRY_BASE_DELAY_SECONDS * (2**attempt))
+            continue
+
+        break
 
     if response.status_code >= 300:
         logger.error("Gemini xato qaytardi: %s %s", response.status_code, response.text)
