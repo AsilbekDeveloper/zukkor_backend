@@ -22,7 +22,7 @@ from app.schemas.quiz import (
     QuizSummary,
 )
 from app.services.quiz_access import can_access_category
-from app.services.scoring import calculate_ball
+from app.services.scoring import calculate_ball, compute_time_limit_ms
 from app.services.streak import update_streak
 from app.services.xp_award import compute_xp_eligible_ball
 
@@ -127,7 +127,7 @@ async def start_quiz(
         question_id=first_question.id,
         order=1,
         total=total,
-        time_limit_ms=15000,
+        time_limit_ms=compute_time_limit_ms(first_question.question_text, first_question.options),
         option_order=option_order,
     )
     db.add(session_question)
@@ -210,7 +210,9 @@ async def answer_question(
             question_id=next_question.id,
             order=session_question.order + 1,
             total=session_question.total,
-            time_limit_ms=session_question.time_limit_ms,
+            # Oldingi savolning vaqtini emas - HAR SAVOL O'ZINING matn/variant
+            # uzunligiga qarab o'z vaqtini olishi kerak.
+            time_limit_ms=compute_time_limit_ms(next_question.question_text, next_question.options),
             option_order=next_option_order,
         )
         db.add(next_session_question)

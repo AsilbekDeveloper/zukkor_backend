@@ -10,11 +10,15 @@ from app.models.quiz import Category, Question
 from app.models.user import User
 from app.models.xp_event import XpEvent
 from app.services.xp_award import compute_xp_eligible_ball
-from app.services.scoring import calculate_ball
+from app.services.scoring import calculate_ball, compute_time_limit_ms
 from app.services.streak import update_streak
 from app.services.ws_manager import manager
 
 DEFAULT_TOTAL_QUESTIONS = 10
+# Endi har bir savol o'zining matn/variant uzunligiga qarab vaqt oladi
+# (compute_time_limit_ms) - bu konstanta faqat javob berilmagan savol
+# uchun "eng uzun vaqt" deb hisoblashda zaxira sifatida qoladi (haqiqiy
+# DuelQuestion.time_limit_ms topilmasa).
 QUESTION_TIME_LIMIT_MS = 15000
 PRE_GAME_COUNTDOWN_SECONDS = 5
 # Har savoldan keyin to'g'ri/noto'g'ri belgisi ekranda ko'rinib turishi
@@ -150,13 +154,14 @@ async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_
             option_order = random.sample(range(len(question.options)), len(question.options))
             shuffled_options = [question.options[j] for j in option_order]
             correct_option = option_order.index(question.correct_option_index)
+            time_limit_ms = compute_time_limit_ms(question.question_text, question.options)
 
             dq = DuelQuestion(
                 duel_id=duel.id,
                 question_id=question.id,
                 order=i,
                 option_order=option_order,
-                time_limit_ms=QUESTION_TIME_LIMIT_MS,
+                time_limit_ms=time_limit_ms,
             )
             db.add(dq)
             dq_objects.append(dq)
@@ -165,6 +170,7 @@ async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_
                     "question_text": question.question_text,
                     "shuffled_options": shuffled_options,
                     "correct_option": correct_option,
+                    "time_limit_ms": time_limit_ms,
                 }
             )
 
@@ -231,7 +237,7 @@ async def _send_question_to_user(state: _ActiveDuel, user_id: str, index: int) -
                 # Ataylab (2026-08-26) - klient tanlangan zahoti to'g'ri/
                 # noto'g'rini serverga murojaat qilmasdan ko'rsatishi uchun.
                 "correct_option": q["correct_option"],
-                "time_limit_ms": QUESTION_TIME_LIMIT_MS,
+                "time_limit_ms": q["time_limit_ms"],
             },
         },
     )
@@ -251,7 +257,7 @@ async def _send_question_to_user(state: _ActiveDuel, user_id: str, index: int) -
 
 async def _user_timeout(state: _ActiveDuel, user_id: str, index: int) -> None:
     try:
-        await asyncio.sleep(QUESTION_TIME_LIMIT_MS / 1000)
+        await asyncio.sleep(state.questions[index]["time_limit_ms"] / 1000)
     except asyncio.CancelledError:
         return
     if state.duel_id not in _active_duels:
@@ -393,6 +399,14 @@ async def _finish_duel(state: _ActiveDuel) -> None:
     state.finished = True
 
     async with AsyncSessionLocal() as db:
+        # Duel'dagi BARCHA savollar (javob berilgan-berilmaganidan qat'iy
+        # nazar) - javobsiz qolgan savolning ham O'ZINING (endi har xil
+        # bo'lishi mumkin) vaqtini bilish uchun kerak, doimiy konstanta emas.
+        dq_result = await db.execute(
+            select(DuelQuestion.id, DuelQuestion.time_limit_ms).where(DuelQuestion.duel_id == state.duel_id)
+        )
+        time_limit_by_duel_question_id: dict[int, int] = dict(dq_result.all())
+
         result = await db.execute(
             select(DuelAnswer, DuelQuestion.order, Question.question_text, Question.id)
             .join(DuelQuestion, DuelQuestion.id == DuelAnswer.duel_question_id)
@@ -414,16 +428,27 @@ async def _finish_duel(state: _ActiveDuel) -> None:
             user_answers = [a for a in all_answers if a.user_id == uid]
             correct = sum(1 for a in user_answers if a.is_correct)
             answered_time = sum(a.elapsed_ms or 0 for a in user_answers)
-            # javob berilmagan savollar "eng uzun vaqt" (time_limit_ms) sifatida hisoblanadi -
-            # aks holda javob bermaslik tie-break'da "eng tezkor javob" kabi mukofotlanib qoladi
-            unanswered_count = state.total_questions - len(user_answers)
-            total_time_ms = answered_time + unanswered_count * QUESTION_TIME_LIMIT_MS
+            # Javob berilmagan har bir savol O'ZINING (aynan shu savol
+            # uchun hisoblangan) vaqt limiti bilan "eng uzun vaqt" sifatida
+            # qo'shiladi - aks holda javob bermaslik tie-break'da "eng
+            # tezkor javob" kabi mukofotlanib qoladi.
+            answered_dq_ids = {a.duel_question_id for a in user_answers}
+            unanswered_time_ms = sum(
+                time_limit_ms
+                for dq_id, time_limit_ms in time_limit_by_duel_question_id.items()
+                if dq_id not in answered_dq_ids
+            )
+            total_time_ms = answered_time + unanswered_time_ms
             return correct, total_time_ms
 
         def _ball_for(uid: str) -> int:
             user_answers = [a for a in all_answers if a.user_id == uid]
             return sum(
-                calculate_ball(a.elapsed_ms or QUESTION_TIME_LIMIT_MS, QUESTION_TIME_LIMIT_MS, a.is_correct)
+                calculate_ball(
+                    a.elapsed_ms or time_limit_by_duel_question_id.get(a.duel_question_id, QUESTION_TIME_LIMIT_MS),
+                    time_limit_by_duel_question_id.get(a.duel_question_id, QUESTION_TIME_LIMIT_MS),
+                    a.is_correct,
+                )
                 for a in user_answers
             )
 
@@ -447,7 +472,12 @@ async def _finish_duel(state: _ActiveDuel) -> None:
                 (
                     question_id,
                     answer.is_correct,
-                    calculate_ball(answer.elapsed_ms or QUESTION_TIME_LIMIT_MS, QUESTION_TIME_LIMIT_MS, answer.is_correct),
+                    calculate_ball(
+                        answer.elapsed_ms
+                        or time_limit_by_duel_question_id.get(answer.duel_question_id, QUESTION_TIME_LIMIT_MS),
+                        time_limit_by_duel_question_id.get(answer.duel_question_id, QUESTION_TIME_LIMIT_MS),
+                        answer.is_correct,
+                    ),
                 )
                 for answer, _order, _text, question_id in all_rows
                 if answer.user_id == uid

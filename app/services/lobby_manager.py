@@ -15,7 +15,7 @@ from app.models.user import User
 from app.models.xp_event import XpEvent
 from app.services.xp_award import compute_xp_eligible_ball
 from app.services.quiz_access import can_access_category
-from app.services.scoring import calculate_ball
+from app.services.scoring import calculate_ball, compute_time_limit_ms
 from app.services.streak import update_streak
 
 logger = logging.getLogger("zukkor.ws")
@@ -328,6 +328,7 @@ async def start_game(
                     "question_text": question.question_text,
                     "shuffled_options": shuffled_options,
                     "correct_option": correct_option,
+                    "time_limit_ms": compute_time_limit_ms(question.question_text, question.options),
                 }
             )
 
@@ -374,7 +375,7 @@ async def _send_question_to_participant(room: _Room, participant_id: str, index:
                     # Ataylab (2026-08-26) - klient tanlangan zahoti to'g'ri/
                     # noto'g'rini serverga murojaat qilmasdan ko'rsatishi uchun.
                     "correct_option": q["correct_option"],
-                    "time_limit_ms": QUESTION_TIME_LIMIT_MS,
+                    "time_limit_ms": q["time_limit_ms"],
                 },
             },
         )
@@ -389,7 +390,8 @@ async def _send_question_to_participant(room: _Room, participant_id: str, index:
 
 async def _participant_timeout(room: _Room, participant_id: str, index: int) -> None:
     try:
-        await asyncio.sleep(QUESTION_TIME_LIMIT_MS / 1000)
+        time_limit_ms = room.game.questions[index]["time_limit_ms"] if room.game is not None else QUESTION_TIME_LIMIT_MS
+        await asyncio.sleep(time_limit_ms / 1000)
     except asyncio.CancelledError:
         return
     if room.game is None or participant_id not in room.game.participant_user_ids:
@@ -473,7 +475,12 @@ async def _handle_participant_finished_question(
         task.cancel()
 
     game.answers_log[participant_id].append(
-        {"question_id": q["question_id"], "elapsed_ms": elapsed_ms, "is_correct": is_correct}
+        {
+            "question_id": q["question_id"],
+            "elapsed_ms": elapsed_ms,
+            "is_correct": is_correct,
+            "time_limit_ms": q["time_limit_ms"],
+        }
     )
 
     participant = room.participants.get(participant_id)
@@ -495,7 +502,7 @@ def _score_for(game: _GameState, participant_id: str) -> tuple[int, int, int]:
     log = game.answers_log[participant_id]
     correct = sum(1 for a in log if a["is_correct"])
     total_time_ms = sum(a["elapsed_ms"] for a in log)
-    ball = sum(calculate_ball(a["elapsed_ms"], QUESTION_TIME_LIMIT_MS, a["is_correct"]) for a in log)
+    ball = sum(calculate_ball(a["elapsed_ms"], a["time_limit_ms"], a["is_correct"]) for a in log)
     return correct, total_time_ms, ball
 
 
@@ -554,7 +561,7 @@ async def _finish_game(room: _Room) -> None:
                 continue
 
             per_question_answers = [
-                (a["question_id"], a["is_correct"], calculate_ball(a["elapsed_ms"], QUESTION_TIME_LIMIT_MS, a["is_correct"]))
+                (a["question_id"], a["is_correct"], calculate_ball(a["elapsed_ms"], a["time_limit_ms"], a["is_correct"]))
                 for a in game.answers_log[participant_id]
             ]
             xp_ball = await compute_xp_eligible_ball(db, user_id, is_official, per_question_answers)
