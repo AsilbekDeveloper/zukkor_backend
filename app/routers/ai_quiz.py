@@ -1,12 +1,13 @@
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from app.core.database import AsyncSessionLocal, get_db
+from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
 from app.models.ai_quiz_job import AiQuizGenerationJob
 from app.models.friendship import Friendship
@@ -88,7 +89,9 @@ def _question_count_subquery():
     status_code=status.HTTP_201_CREATED,
     summary="Hujjatdan AI orqali quiz yaratish",
 )
+@limiter.limit("5/minute")
 async def generate_ai_quiz(
+    request: Request,
     file: UploadFile | None = File(None),
     instruction: str | None = Form(None),
     topic: str | None = Form(None),
@@ -271,7 +274,9 @@ async def _run_generation_job(
     "tayyor bo'lgach push (`type: pdf_ready`) yuboriladi. Katta hujjatlar uchun (1-2 daqiqa "
     "davom etishi mumkin) ochiq HTTP ulanishini kutishning oldini olish uchun.",
 )
+@limiter.limit("5/minute")
 async def generate_ai_quiz_async(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile | None = File(None),
     instruction: str | None = Form(None),

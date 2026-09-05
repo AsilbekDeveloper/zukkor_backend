@@ -22,6 +22,7 @@ from app.schemas.ai_quiz import ManualQuestionIn, ManualQuizCreate, TopicUpdate,
 from app.schemas.quiz import QuizStartRequest
 from app.services.ai_quiz_generation import QuizGenerationError, _validate_questions
 from app.services.document_text import UnsupportedDocumentError, extract_text
+from conftest import make_request
 
 FAKE_QUESTIONS = [
     {"question_text": "1+1 nechaga teng?", "options": ["1", "2", "3", "4"], "correct_option_index": 1},
@@ -111,6 +112,7 @@ async def test_generate_ai_quiz_creates_private_category(db_session, monkeypatch
     user = await _create_user(db_session)
 
     result = await generate_ai_quiz(
+        request=make_request(),
         file=_upload("kitob.txt", b"kitobning matni"),
         instruction="hammasidan 2 ta savol",
         topic=None,
@@ -138,6 +140,7 @@ async def test_generate_ai_quiz_instruction_is_optional_with_file(db_session, mo
     user = await _create_user(db_session)
 
     result = await generate_ai_quiz(
+        request=make_request(),
         file=_upload("kitob.txt", b"kitobning matni"),
         instruction=None,
         topic=None,
@@ -156,6 +159,7 @@ async def test_generate_ai_quiz_topic_only_uses_web_search(db_session, monkeypat
     user = await _create_user(db_session)
 
     result = await generate_ai_quiz(
+        request=make_request(),
         file=None,
         instruction=None,
         topic="2-jahon tarixidan savollar, o'rtacha qiyinchilik",
@@ -179,6 +183,7 @@ async def test_generate_ai_quiz_rejects_when_neither_file_nor_topic_given(db_ses
 
     with pytest.raises(HTTPException) as exc_info:
         await generate_ai_quiz(
+            request=make_request(),
             file=None,
             instruction=None,
             topic=None,
@@ -197,6 +202,7 @@ async def test_generate_ai_quiz_rejects_unsupported_file(db_session, monkeypatch
 
     with pytest.raises(HTTPException) as exc_info:
         await generate_ai_quiz(
+            request=make_request(),
             file=_upload("virus.exe", b"whatever"),
             instruction="savollar",
             topic=None,
@@ -217,6 +223,7 @@ async def test_list_my_ai_quizzes_only_returns_own_active_quizzes(db_session, mo
     user_b = await _create_user(db_session, "b@example.com")
 
     await generate_ai_quiz(
+        request=make_request(),
         file=_upload("a-kitob.txt", b"matn"),
         instruction="x",
         topic=None,
@@ -226,6 +233,7 @@ async def test_list_my_ai_quizzes_only_returns_own_active_quizzes(db_session, mo
         db=db_session,
     )
     await generate_ai_quiz(
+        request=make_request(),
         file=_upload("b-kitob.txt", b"matn"),
         instruction="x",
         topic=None,
@@ -247,6 +255,7 @@ async def test_delete_ai_quiz_soft_deletes_and_is_owner_only(db_session, monkeyp
     other = await _create_user(db_session, "other@example.com")
 
     created = await generate_ai_quiz(
+        request=make_request(),
         file=_upload("kitob.txt", b"matn"),
         instruction="x",
         topic=None,
@@ -276,6 +285,7 @@ async def test_other_user_cannot_start_quiz_on_someone_elses_private_category(db
     other = await _create_user(db_session, "other2@example.com")
 
     created = await generate_ai_quiz(
+        request=make_request(),
         file=_upload("kitob.txt", b"matn"),
         instruction="x",
         topic=None,
@@ -303,6 +313,7 @@ async def test_private_ai_categories_never_appear_in_public_categories_list(db_s
 
     db_session.add(Category(name="Math", icon_name="calculator", color_key="coral", is_active=True))
     await generate_ai_quiz(
+        request=make_request(),
         file=_upload("kitob.txt", b"matn"),
         instruction="x",
         topic=None,

@@ -12,6 +12,7 @@ from app.models.user import User
 from app.routers import ai_quiz
 from app.routers.ai_quiz import generate_ai_quiz_async, get_generation_job
 from app.services.ai_quiz_generation import QuizGenerationError
+from conftest import make_request
 
 FAKE_QUESTIONS = [
     {"question_text": "1+1 nechaga teng?", "options": ["1", "2", "3", "4"], "correct_option_index": 1},
@@ -77,6 +78,7 @@ async def test_topic_job_starts_pending_then_completes(_isolated_session_maker, 
         await db.commit()
 
         started = await generate_ai_quiz_async(
+            make_request(),
             background_tasks,
             file=None,
             instruction=None,
@@ -123,6 +125,7 @@ async def test_job_failure_is_recorded_and_pushed(_isolated_session_maker, _fake
         await db.commit()
 
         started = await generate_ai_quiz_async(
+            make_request(),
             background_tasks,
             file=None,
             instruction=None,
@@ -149,6 +152,7 @@ async def test_generate_async_rejects_when_neither_file_nor_topic(db_session):
     user = await _create_user(db_session)
     with pytest.raises(HTTPException) as exc_info:
         await generate_ai_quiz_async(
+            make_request(),
             BackgroundTasks(),
             file=None,
             instruction=None,
