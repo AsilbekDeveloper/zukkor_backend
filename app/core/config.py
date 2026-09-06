@@ -89,6 +89,12 @@ class Settings(BaseSettings):
     # yakuniy paket kursi bilan albatta qayta ko'rib chiqiladi.
     USD_PER_DIAMOND: float = 0.001
 
+    # Telegram bot - Diamond sotib olish kanali. @BotFather'dan olinadi
+    # (foydalanuvchi o'zi qiladi - bu qadamni Claude bosib chiqolmaydi).
+    # Bo'sh bo'lsa /telegram/webhook hech narsa qilmasdan 200 qaytaradi -
+    # Gemini/R2/SMTP kabi, hali sozlanmagan bo'lsa ham ilova ishga tushadi.
+    TELEGRAM_BOT_TOKEN: str = ""
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("DATABASE_URL")

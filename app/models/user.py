@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -84,6 +84,12 @@ class User(Base):
     referred_by_user_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+
+    # Telegram bot orqali Diamond sotib olish uchun - [[ai_cost_architecture]].
+    # Bot'da hisob bog'langandan keyin to'ldiriladi (`app/routers/telegram.py`
+    # ning `/telegram/link`i orqali). Telegram user ID'lari 32-bit'dan
+    # oshib ketishi mumkin (masalan 5989898989), shuning uchun BigInteger.
+    telegram_user_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, nullable=True, index=True)
 
     duel_invites: Mapped[bool] = mapped_column(Boolean, default=True)
     streak_reminders: Mapped[bool] = mapped_column(Boolean, default=True)
