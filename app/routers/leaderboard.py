@@ -14,6 +14,7 @@ from app.models.user import User
 from app.models.xp_event import XpEvent
 from app.schemas.leaderboard import LeaderboardOut, PlayerStatsOut, RankEntryOut
 from app.services.leveling import compute_level
+from app.services.streak import TASHKENT_OFFSET
 
 router = APIRouter()
 
@@ -213,6 +214,26 @@ async def get_player_stats(
         user.best_rank_achieved = row.rank
         await db.commit()
 
+    # `current_streak` faqat o'yin tugagan payt (`update_streak`) yangilanadi -
+    # agar foydalanuvchi bir necha kun o'ynamay qo'ysa, ustunda ESKI qiymat
+    # saqlanib qoladi ("stale"), chunki uni 0'ga tushiradigan alohida fon-vazifa
+    # yo'q. Shu yerda - har safar statistika o'qilganda - streak hali "tirik"mi
+    # tekshiramiz: agar oxirgi o'yindan beri (mahalliy vaqt bo'yicha) bir kundan
+    # ortiq o'tgan bo'lsa, streak allaqachon uzilgan, shuning uchun 0 qaytaramiz
+    # (keyingi o'yinda `update_streak` uni qaytadan 1'dan boshlaydi - bu yerdagi
+    # o'zgarish faqat KO'RSATISHGA tegishli, ustunning o'zini o'zgartirmaydi).
+    effective_streak = user.current_streak
+    if user.last_played_at is None:
+        effective_streak = 0
+    else:
+        last_played_at = user.last_played_at
+        if last_played_at.tzinfo is None:
+            last_played_at = last_played_at.replace(tzinfo=timezone.utc)
+        last_local_date = (last_played_at + TASHKENT_OFFSET).date()
+        today_local_date = (datetime.now(timezone.utc) + TASHKENT_OFFSET).date()
+        if (today_local_date - last_local_date).days > 1:
+            effective_streak = 0
+
     return PlayerStatsOut(
         user_id=row.id,
         rank=row.rank,
@@ -226,7 +247,7 @@ async def get_player_stats(
         level_title=level_title,
         next_level_xp=next_level_xp,
         current_level_xp=current_level_xp,
-        current_streak=user.current_streak,
+        current_streak=effective_streak,
         longest_streak=user.longest_streak,
         games_played=user.games_played,
         win_rate_percent=win_rate,

@@ -19,6 +19,7 @@ from app.schemas.history import (
     WeeklyActivityOut,
 )
 from app.services.display_name import display_name as _display_name
+from app.services.streak import TASHKENT_OFFSET
 
 router = APIRouter()
 
@@ -31,52 +32,55 @@ async def get_weekly_activity(
     """Oxirgi 7 kun (bugundan boshlab orqaga - dushanba-yakshanba emas,
     "rolling" oyna) ichida qaysi kunlarda kamida bitta o'yin (Solo/Duel/
     Lobby, istalgan turi) tugatilganini qaytaradi - Home'dagi "haftalik
-    faollik" nuqta qatori uchun. Sana (vaqt zonasisiz) bo'yicha
-    taqqoslanadi - SQLite'ning `finished_at`ni tzinfo'siz o'qib
-    qaytarishi bilan ham to'g'ri ishlashi uchun.
-    """
-    today = datetime.now(timezone.utc).date()
-    window_start = today - timedelta(days=6)
+    faollik" nuqta qatori uchun.
 
-    solo_dates = (
+    Sana MAHALLIY (Toshkent, UTC+5) vaqt bo'yicha hisoblanadi - xuddi
+    `streak.py`dagi kabi (`TASHKENT_OFFSET`). Avval bu yerda `func.date()`
+    orqali xom UTC sanadan foydalanilardi, bu esa soat 19:00-23:59 UTC
+    (Toshkentda yarim tundan keyin, 00:00-04:59) oralig'ida tugagan
+    o'yinlarni streak hisobidan BIR KUN OLDINGI kunga belgilardi - shuning
+    uchun karta ustidagi belgilar bilan "current_streak" raqami bir-biriga
+    mos kelmay qolishi mumkin edi. Endi ikkalasi ham bir xil offsetdan
+    foydalanadi.
+    """
+    now_utc = datetime.now(timezone.utc)
+    today_local = (now_utc + TASHKENT_OFFSET).date()
+    window_start_local = today_local - timedelta(days=6)
+
+    solo_finished_ats = (
         await db.execute(
-            select(func.date(QuizSession.finished_at))
-            .where(QuizSession.user_id == current_user.id, QuizSession.finished_at.is_not(None))
-            .distinct()
+            select(QuizSession.finished_at).where(
+                QuizSession.user_id == current_user.id, QuizSession.finished_at.is_not(None)
+            )
         )
     ).scalars().all()
 
-    duel_dates = (
+    duel_finished_ats = (
         await db.execute(
-            select(func.date(Duel.finished_at))
-            .where(
+            select(Duel.finished_at).where(
                 or_(Duel.user_a_id == current_user.id, Duel.user_b_id == current_user.id),
                 Duel.status == "finished",
             )
-            .distinct()
         )
     ).scalars().all()
 
-    lobby_dates = (
+    lobby_finished_ats = (
         await db.execute(
-            select(func.date(LobbyGame.finished_at))
+            select(LobbyGame.finished_at)
             .select_from(LobbyGameResult)
             .join(LobbyGame, LobbyGame.id == LobbyGameResult.lobby_game_id)
             .where(LobbyGameResult.user_id == current_user.id)
-            .distinct()
         )
     ).scalars().all()
 
-    played_dates: set[str] = set()
-    for raw in (*solo_dates, *duel_dates, *lobby_dates):
+    played_local_dates = set()
+    for raw in (*solo_finished_ats, *duel_finished_ats, *lobby_finished_ats):
         if raw is None:
             continue
-        # SQLite/Postgres ikkalasi ham `func.date()`dan matn yoki `date`
-        # obyekti qaytarishi mumkin (drayverga qarab) - ikkalasini ham
-        # 'YYYY-MM-DD' matniga keltiramiz.
-        played_dates.add(str(raw)[:10])
+        finished_at = raw if raw.tzinfo is not None else raw.replace(tzinfo=timezone.utc)
+        played_local_dates.add((finished_at + TASHKENT_OFFSET).date())
 
-    days = [(window_start + timedelta(days=i)).isoformat() in played_dates for i in range(7)]
+    days = [(window_start_local + timedelta(days=i)) in played_local_dates for i in range(7)]
     return WeeklyActivityOut(days=days)
 
 
