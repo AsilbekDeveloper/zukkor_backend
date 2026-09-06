@@ -14,7 +14,14 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqladmin import Admin
 
-from app.admin import AdminAuth, CategoryAdmin, QuestionAdmin, QuestionSubmissionAdmin, ReportedQuestionAdmin
+from app.admin import (
+    AdminAuth,
+    CategoryAdmin,
+    CurrencyTransactionAdmin,
+    QuestionAdmin,
+    QuestionSubmissionAdmin,
+    ReportedQuestionAdmin,
+)
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.core.limiter import limiter
@@ -32,6 +39,7 @@ from app.routers import (
     quiz,
     reports,
     users,
+    wallet,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -120,6 +128,7 @@ app.include_router(leaderboard.router, prefix="/leaderboard", tags=["Leaderboard
 app.include_router(history.router, prefix="/history", tags=["History"])
 app.include_router(friends.router, prefix="/friends", tags=["Friends"])
 app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
+app.include_router(wallet.router, prefix="/wallet", tags=["Wallet"])
 app.include_router(duel_ws.router, prefix="/ws", tags=["Duel WebSocket"])
 app.include_router(lobby_ws.router, prefix="/ws", tags=["Lobby WebSocket"])
 
@@ -133,6 +142,7 @@ admin.add_view(CategoryAdmin)
 admin.add_view(QuestionAdmin)
 admin.add_view(ReportedQuestionAdmin)
 admin.add_view(QuestionSubmissionAdmin)
+admin.add_view(CurrencyTransactionAdmin)
 
 
 @app.get("/", tags=["Health"], summary="API holati")

@@ -16,7 +16,7 @@ from app.models.xp_event import XpEvent
 from app.services.xp_award import compute_xp_eligible_ball
 from app.services.quiz_access import can_access_category
 from app.services.scoring import calculate_ball, compute_time_limit_ms
-from app.services.streak import update_streak
+from app.services import wallet
 
 logger = logging.getLogger("zukkor.ws")
 
@@ -569,7 +569,7 @@ async def _finish_game(room: _Room) -> None:
 
             user.total_xp += xp
             user.games_played += 1
-            update_streak(user, now)
+            await wallet.on_game_finished(db, user, now, is_first_game_ever=user.games_played == 1)
             db.add(XpEvent(user_id=user_id, amount=xp))
 
             db.add(

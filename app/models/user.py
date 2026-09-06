@@ -59,6 +59,32 @@ class User(Base):
     study_place: Mapped[str | None] = mapped_column(String(50), nullable=True)
     quiz_liking: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
+    # --- Coin/Diamond iqtisodiyoti (2026-09-06) - [[ai_cost_architecture]] ---
+    # Coin - yumshoq valyuta, faqat ilova ichi faollik orqali topiladi
+    # (sotib olinmaydi), kosmetika/streak-himoya uchun sarflanadi. Diamond -
+    # qattiq valyuta, Payme/Click orqali (Telegram bot orqali) sotib
+    # olinadi, FAQAT AI-generatsiya uchun sarflanadi. Ikkalasi hech qachon
+    # bir-biriga aylantirilmaydi - alohida ustunlar, alohida mantiq.
+    coin_balance: Mapped[int] = mapped_column(Integer, default=0)
+    diamond_balance: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Kunlik bonuslarning oxirgi berilgan sanasi (Toshkent mahalliy kuni,
+    # `app.services.streak.TASHKENT_OFFSET` bilan bir xil kun chegarasi) -
+    # bir kunda faqat bir marta berilishini nazorat qilish uchun.
+    last_daily_bonus_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_first_game_bonus_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Har bir foydalanuvchining o'z taklif kodi (do'stlarni taklif qilish
+    # uchun ulashadi) - ro'yxatdan o'tishda generatsiya qilinadi.
+    referral_code: Mapped[str | None] = mapped_column(String(12), unique=True, nullable=True, index=True)
+    # Kim taklif qilgani - faqat ro'yxatdan o'tishda to'g'ri kod kiritilsa
+    # to'ldiriladi, keyinchalik o'zgarmaydi. Taklif qilgan userga bonus
+    # ushbu do'st birinchi o'yinini tugatganda beriladi (cheklovsiz -
+    # foydalanuvchining o'z qarori bilan).
+    referred_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
     duel_invites: Mapped[bool] = mapped_column(Boolean, default=True)
     streak_reminders: Mapped[bool] = mapped_column(Boolean, default=True)
     leaderboard_updates: Mapped[bool] = mapped_column(Boolean, default=True)

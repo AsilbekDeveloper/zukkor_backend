@@ -32,6 +32,7 @@ from app.models.quiz import Answer, QuizSession, SessionQuestion
 from app.models.user import PasswordResetCode, RefreshToken, User
 from app.services.email import send_password_reset_email
 from app.services.firebase import get_firebase_app
+from app.services import wallet
 from app.models.xp_event import XpEvent
 from app.schemas.auth import (
     ChangePasswordRequest,
@@ -66,8 +67,22 @@ async def register(request: Request, data: RegisterRequest, db: AsyncSession = D
         email=data.email,
         hashed_password=hash_password(data.password),
     )
+    # Boshlang'ich bepul Diamond + o'z taklif kodi - [[ai_cost_architecture]].
+    wallet.apply_signup_defaults(user)
     db.add(user)
+
+    if data.referral_code:
+        referrer_result = await db.execute(
+            select(User).where(User.referral_code == data.referral_code.strip().upper())
+        )
+        referrer = referrer_result.scalar_one_or_none()
+        if referrer is not None:
+            user.referred_by_user_id = referrer.id
+
     try:
+        # `user.id` `default=`si faqat SHU flush paytida tayinlanadi (obyekt
+        # yaratilganda EMAS) - shuning uchun `user_id` talab qiladigan ledger
+        # yozuvi FAQAT shu flush'dan keyin qo'shilishi mumkin.
         await db.flush()
     except IntegrityError:
         # Yuqoridagi tekshiruvdan keyin, flush'gacha bo'lgan oraliqda boshqa
@@ -76,6 +91,8 @@ async def register(request: Request, data: RegisterRequest, db: AsyncSession = D
         # buziladi. 500 o'rniga toza 400 qaytaramiz.
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bu email allaqachon ro'yxatdan o'tgan")
+
+    db.add(wallet.signup_bonus_transaction(user))
 
     access_token = create_access_token({"sub": user.id})
     refresh_token_str = create_refresh_token({"sub": user.id})
@@ -160,8 +177,19 @@ async def google_auth(request: Request, data: GoogleAuthRequest, db: AsyncSessio
             user.google_id = google_id
         else:
             user = User(email=email, google_id=google_id, auth_provider="google")
+            wallet.apply_signup_defaults(user)
             db.add(user)
+            if data.referral_code:
+                referrer_result = await db.execute(
+                    select(User).where(User.referral_code == data.referral_code.strip().upper())
+                )
+                referrer = referrer_result.scalar_one_or_none()
+                if referrer is not None:
+                    user.referred_by_user_id = referrer.id
+            # `user.id` shu flush'da tayinlanadi - ledger yozuvi shundan
+            # keyin qo'shiladi (register() bilan bir xil sabab).
             await db.flush()
+            db.add(wallet.signup_bonus_transaction(user))
 
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hisob faol emas")
@@ -254,7 +282,11 @@ async def logout(data: RefreshRequest, db: AsyncSession = Depends(get_db)):
     summary="Joriy foydalanuvchi",
     description="Access token orqali joriy foydalanuvchi ma'lumotlarini qaytaradi.",
 )
-async def me(current_user: User = Depends(get_current_user)):
+async def me(current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    # Kunlik kirish Coin bonusi - alohida endpoint/tugma shart emas, Home
+    # har safar ochilganda shu yerni chaqiradi, "kirdi" degani shu.
+    await wallet.check_and_grant_daily_login_bonus(db, current_user)
+    await db.commit()
     return UserResponse.from_orm_model(current_user)
 
 

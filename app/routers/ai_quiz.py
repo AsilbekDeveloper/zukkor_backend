@@ -26,6 +26,7 @@ from app.services.ai_quiz_generation import QuizGenerationError, _validate_quest
 from app.services.document_text import UnsupportedDocumentError, extract_text
 from app.services.push import send_push_to_user
 from app.services.quiz_access import can_access_category, is_friend
+from app.services import wallet
 
 router = APIRouter()
 
@@ -37,6 +38,19 @@ DEFAULT_QUESTION_COUNT = 10
 MAX_QUESTION_COUNT = 20
 MAX_TOPIC_LENGTH = 300
 VALID_VISIBILITIES = {"private", "friends", "public"}
+
+# Diamond-yetarlilikni OLDINDAN (Gemini'ga so'rov yuborishdan oldin) tekshirish
+# uchun tахminiy hisob - haqiqiy narx har doim generatsiya TUGAGANDAN keyin,
+# haqiqiy token sonidan qayta hisoblanadi (`wallet.diamond_cost_from_tokens`).
+_CHARS_PER_TOKEN_ESTIMATE = 4
+
+
+def _estimate_input_tokens(text_or_bytes: str | bytes) -> int:
+    # Fayl hali matnga ajratilmagan bo'lsa (masalan `/generate-async`ning
+    # oldindan-tekshiruvi) xom bayt uzunligi ishlatiladi - PDF/DOCX kabi
+    # formatlar odatda o'z matnidan KO'PROQ bayt egallaydi, shuning uchun
+    # bu haqiqiy token sonini OSHIRIB (xavfsiz tomonga) taxmin qiladi.
+    return max(1, len(text_or_bytes) // _CHARS_PER_TOKEN_ESTIMATE)
 
 # Ro'yxat/Discover so'rovlarida quiz'ning mavzu-kategoriyasi nomini bitta
 # JOIN bilan olish uchun - har bir qatorga alohida so'rov yubormaslik uchun.
@@ -124,21 +138,53 @@ async def generate_ai_quiz(
         if not text.strip():
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Hujjatdan matn topilmadi")
 
+        estimated_cost = wallet.estimate_diamond_cost(
+            estimated_input_tokens=_estimate_input_tokens(text), question_count=question_count
+        )
+        if current_user.diamond_balance < estimated_cost:
+            raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Diamond balansi yetarli emas")
+
         try:
-            questions = await generate_questions(text, instruction_clean, question_count)
+            result = await generate_questions(text, instruction_clean, question_count)
         except QuizGenerationError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
+        questions = result.questions
         title = (file.filename or "AI Quiz").rsplit(".", 1)[0][:50] or "AI Quiz"
         source = "ai_document"
     else:
+        estimated_cost = wallet.estimate_diamond_cost(
+            estimated_input_tokens=_estimate_input_tokens(topic_clean), question_count=question_count
+        )
+        if current_user.diamond_balance < estimated_cost:
+            raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Diamond balansi yetarli emas")
+
         try:
-            questions = await generate_questions_from_topic(topic_clean, instruction_clean, question_count)
+            result = await generate_questions_from_topic(topic_clean, instruction_clean, question_count)
         except QuizGenerationError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
+        questions = result.questions
         title = topic_clean[:50] or "AI Quiz"
         source = "ai_topic"
+
+    # Diamond FAQAT shu yerda, generatsiya haqiqatan MUVAFFAQIYATLI
+    # tugagandan keyin, haqiqiy token sarfidan yechiladi - shuning uchun
+    # muvaffaqiyatsiz urinishda "qaytarish" degan alohida mantiq kerak
+    # emas (hech qachon bo'lmagan narsa uchun pul olinmaydi).
+    diamond_cost = wallet.diamond_cost_from_tokens(result.input_tokens, result.output_tokens)
+    await wallet.debit_diamond(
+        db,
+        current_user,
+        diamond_cost,
+        "ai_generation",
+        extra={
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+            "question_count": question_count,
+            "mode": source,
+        },
+    )
 
     category = Category(
         name=title,
@@ -199,6 +245,7 @@ async def _run_generation_job(
             return
 
         try:
+            user = await db.get(User, user_id)
             if file_bytes is not None:
                 try:
                     text = extract_text(filename or "", file_bytes)
@@ -207,13 +254,33 @@ async def _run_generation_job(
                 if not text.strip():
                     raise QuizGenerationError("Hujjatdan matn topilmadi")
 
-                questions = await generate_questions(text, instruction, question_count)
+                result = await generate_questions(text, instruction, question_count)
                 title = (filename or "AI Quiz").rsplit(".", 1)[0][:50] or "AI Quiz"
                 source = "ai_document"
             else:
-                questions = await generate_questions_from_topic(topic, instruction, question_count)
+                result = await generate_questions_from_topic(topic, instruction, question_count)
                 title = topic[:50] or "AI Quiz"
                 source = "ai_topic"
+
+            questions = result.questions
+
+            # Diamond FAQAT muvaffaqiyatli generatsiyadan keyin, haqiqiy
+            # token sarfidan yechiladi - `generate_ai_quiz` (sinxron yo'l)
+            # bilan bir xil mantiq, [[ai_cost_architecture]].
+            if user is not None:
+                diamond_cost = wallet.diamond_cost_from_tokens(result.input_tokens, result.output_tokens)
+                await wallet.debit_diamond(
+                    db,
+                    user,
+                    diamond_cost,
+                    "ai_generation",
+                    extra={
+                        "input_tokens": result.input_tokens,
+                        "output_tokens": result.output_tokens,
+                        "question_count": question_count,
+                        "mode": source,
+                    },
+                )
 
             category = Category(
                 name=title,
@@ -303,6 +370,15 @@ async def generate_ai_quiz_async(
         assert file is not None
         file_bytes = await _read_limited(file, MAX_UPLOAD_SIZE_BYTES)
         filename = file.filename
+
+    # Fon vazifasi (`_run_generation_job`) behuda ishga tushmasin - haqiqiy
+    # narx generatsiya tugagach qayta hisoblanadi, bu faqat tахminiy tekshiruv.
+    estimated_cost = wallet.estimate_diamond_cost(
+        estimated_input_tokens=_estimate_input_tokens(file_bytes if file_bytes is not None else topic_clean),
+        question_count=question_count,
+    )
+    if current_user.diamond_balance < estimated_cost:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Diamond balansi yetarli emas")
 
     job = AiQuizGenerationJob(user_id=current_user.id, status="pending", question_count=question_count)
     db.add(job)

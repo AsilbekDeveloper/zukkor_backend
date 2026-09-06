@@ -70,6 +70,25 @@ class Settings(BaseSettings):
     # production/staging) - Railway environment variable orqali o'rnatiladi.
     ENVIRONMENT: str = "production"
 
+    # --- Coin/Diamond iqtisodiyoti (2026-09-06 qaror) ---
+    # Ro'yxatdan o'tganda beriladigan bepul Diamond miqdori - foydalanuvchi
+    # birinchi marta AI-generatsiyani hech narsa to'lamasdan sinab ko'rishi
+    # uchun. Aniq raqam hali narxlash bosqichida belgilanmagan - shu
+    # yerdan (yoki Railway env-var orqali) kodni o'zgartirmasdan sozlanadi.
+    DEFAULT_STARTING_DIAMONDS: int = 50
+    # Diamond narxlash formulasi: sotish narxi = 4 x (haqiqiy API xarajati),
+    # xarajat esa 2027-yil standart Gemini 3.6 Flash tarifidan hisoblanadi
+    # (joriy 2026 chegirmali tarifidan emas - ataylab marja zaxirasi
+    # sifatida, [[ai_cost_architecture]] xotirasida qaror qilingan).
+    GEMINI_2027_INPUT_USD_PER_1M_TOKENS: float = 1.5
+    GEMINI_2027_OUTPUT_USD_PER_1M_TOKENS: float = 7.5
+    DIAMOND_MARKUP_MULTIPLIER: float = 4.0
+    # 1 Diamond qancha AQSH dollariga teng - Payme/Click paket narxlari
+    # hali belgilanmagani uchun bu ORALIQ/vaqtinchalik qiymat: faqat "bitta
+    # generatsiya nechta Diamond turadi" hisobini chiqarish uchun kerak,
+    # yakuniy paket kursi bilan albatta qayta ko'rib chiqiladi.
+    USD_PER_DIAMOND: float = 0.001
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("DATABASE_URL")

@@ -83,7 +83,10 @@ async def moderate_question(
     )
 
     try:
-        raw_text = await call_gemini(prompt, response_schema=_RESPONSE_SCHEMA)
+        # Moderatsiya Diamond bilan to'lanmaydi (faqat AI-quiz-generatsiya
+        # to'lanadi - [[ai_cost_architecture]]), shuning uchun token sarfi
+        # bu yerda e'tiborga olinmaydi.
+        raw_text = (await call_gemini(prompt, response_schema=_RESPONSE_SCHEMA)).text
     except GeminiCallError as exc:
         raise QuestionModerationError(str(exc)) from exc
 

@@ -3,6 +3,7 @@ API orqali quiz savollari generatsiya qilish."""
 
 import json
 import logging
+from dataclasses import dataclass
 
 from app.services.gemini_client import GeminiCallError, call_gemini
 
@@ -33,7 +34,19 @@ class QuizGenerationError(Exception):
     """AI orqali quiz generatsiya qilib bo'lmadi (sozlanmagan, tarmoq xatosi, yoki natija yaroqsiz)."""
 
 
-async def _call_gemini(prompt: str, *, use_search: bool) -> str:
+@dataclass(frozen=True)
+class GeneratedQuiz:
+    """`generate_questions`/`generate_questions_from_topic` natijasi -
+    savollar RO'YXATI HAMDA haqiqiy token sarfi (chaqiruvchi - `ai_quiz.py`
+    routeri - shu ikkalasidan Diamond narxini hisoblab, generatsiya
+    TUGAGANDAN keyin yechadi - [[ai_cost_architecture]])."""
+
+    questions: list[dict]
+    input_tokens: int
+    output_tokens: int
+
+
+async def _call_gemini(prompt: str, *, use_search: bool):
     # Past-darajali so'rov/retry/xato-qayta-ishlash mantig'i umumiy
     # app.services.gemini_client'da yashaydi (savol-moderatsiya kabi boshqa
     # AI-xususiyatlar bilan baham ko'riladi) - bu yerda faqat shu modulga
@@ -59,7 +72,7 @@ def _parse_and_validate(raw_text: str) -> list[dict]:
     return validated
 
 
-async def generate_questions(text: str, instruction: str, question_count: int) -> list[dict]:
+async def generate_questions(text: str, instruction: str, question_count: int) -> GeneratedQuiz:
     truncated = text[:_MAX_SOURCE_TEXT_CHARS]
     instruction_line = f"Foydalanuvchi ko'rsatmasi: {instruction}\n" if instruction.strip() else ""
     prompt = (
@@ -73,11 +86,12 @@ async def generate_questions(text: str, instruction: str, question_count: int) -
         "tuzmang.\n\n"
         f"Hujjat matni:\n{truncated}"
     )
-    raw_text = await _call_gemini(prompt, use_search=False)
-    return _parse_and_validate(raw_text)
+    result = await _call_gemini(prompt, use_search=False)
+    questions = _parse_and_validate(result.text)
+    return GeneratedQuiz(questions=questions, input_tokens=result.input_tokens, output_tokens=result.output_tokens)
 
 
-async def generate_questions_from_topic(topic: str, instruction: str, question_count: int) -> list[dict]:
+async def generate_questions_from_topic(topic: str, instruction: str, question_count: int) -> GeneratedQuiz:
     """Mavzu bo'yicha - hech qanday hujjatsiz - AI'ning o'z bilimidan
     foydalanib savollar tayyorlaydi. `instruction` ixtiyoriy qo'shimcha
     yo'nalish beradi (masalan qiyinchilik darajasi, e'tibor qaratiladigan
@@ -102,8 +116,9 @@ async def generate_questions_from_topic(topic: str, instruction: str, question_c
         "to'g'ri bo'lsin. Savol va variantlarni mavzu qaysi tilda yozilgan bo'lsa, "
         "o'sha tilda yozing."
     )
-    raw_text = await _call_gemini(prompt, use_search=False)
-    return _parse_and_validate(raw_text)
+    result = await _call_gemini(prompt, use_search=False)
+    questions = _parse_and_validate(result.text)
+    return GeneratedQuiz(questions=questions, input_tokens=result.input_tokens, output_tokens=result.output_tokens)
 
 
 def _validate_questions(raw_questions) -> list[dict]:

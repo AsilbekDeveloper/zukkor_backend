@@ -11,8 +11,8 @@ from app.models.user import User
 from app.models.xp_event import XpEvent
 from app.services.xp_award import compute_xp_eligible_ball
 from app.services.scoring import calculate_ball, compute_time_limit_ms
-from app.services.streak import update_streak
 from app.services.ws_manager import manager
+from app.services import wallet
 
 DEFAULT_TOTAL_QUESTIONS = 10
 # Endi har bir savol o'zining matn/variant uzunligiga qarab vaqt oladi
@@ -531,7 +531,7 @@ async def _finish_duel(state: _ActiveDuel) -> None:
             user_a.games_played += 1
             if a_result == "won":
                 user_a.total_wins += 1
-            update_streak(user_a, duel.finished_at)
+            await wallet.on_game_finished(db, user_a, duel.finished_at, is_first_game_ever=user_a.games_played == 1)
             db.add(XpEvent(user_id=state.user_a_id, amount=a_xp))
 
         if user_b is not None:
@@ -539,7 +539,7 @@ async def _finish_duel(state: _ActiveDuel) -> None:
             user_b.games_played += 1
             if b_result == "won":
                 user_b.total_wins += 1
-            update_streak(user_b, duel.finished_at)
+            await wallet.on_game_finished(db, user_b, duel.finished_at, is_first_game_ever=user_b.games_played == 1)
             db.add(XpEvent(user_id=state.user_b_id, amount=b_xp))
 
         await db.commit()

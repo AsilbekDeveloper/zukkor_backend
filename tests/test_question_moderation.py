@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from app.services.gemini_client import GeminiCallError
+from app.services.gemini_client import GeminiCallError, GeminiResponse
 from app.services.question_moderation import QuestionModerationError, moderate_question
 
 _CATEGORIES = [(1, "Matematika"), (2, "Tarix")]
@@ -10,7 +10,7 @@ _CATEGORIES = [(1, "Matematika"), (2, "Tarix")]
 
 def _patch_gemini_response(monkeypatch, raw_text: str):
     async def _fake_call_gemini(prompt, *, response_schema, use_search=False):
-        return raw_text
+        return GeminiResponse(text=raw_text, input_tokens=0, output_tokens=0)
 
     monkeypatch.setattr("app.services.question_moderation.call_gemini", _fake_call_gemini)
 

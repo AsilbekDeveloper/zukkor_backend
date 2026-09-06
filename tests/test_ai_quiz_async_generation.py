@@ -11,7 +11,7 @@ from app.models.quiz import Category, Question
 from app.models.user import User
 from app.routers import ai_quiz
 from app.routers.ai_quiz import generate_ai_quiz_async, get_generation_job
-from app.services.ai_quiz_generation import QuizGenerationError
+from app.services.ai_quiz_generation import GeneratedQuiz, QuizGenerationError
 from conftest import make_request
 
 FAKE_QUESTIONS = [
@@ -51,7 +51,7 @@ def _fake_push(monkeypatch):
 
 
 async def _create_user(db, email="user@example.com") -> User:
-    user = User(email=email, hashed_password=hash_password("Parol1234"))
+    user = User(email=email, hashed_password=hash_password("Parol1234"), diamond_balance=100_000)
     db.add(user)
     await db.flush()
     return user
@@ -65,7 +65,7 @@ async def _run_scheduled_tasks(background_tasks: BackgroundTasks) -> None:
 @pytest.mark.anyio
 async def test_topic_job_starts_pending_then_completes(_isolated_session_maker, _fake_push, monkeypatch):
     async def _fake_generate(topic, instruction, count):
-        return FAKE_QUESTIONS
+        return GeneratedQuiz(questions=FAKE_QUESTIONS, input_tokens=100, output_tokens=100)
 
     monkeypatch.setattr(ai_quiz, "generate_questions_from_topic", _fake_generate)
     background_tasks = BackgroundTasks()

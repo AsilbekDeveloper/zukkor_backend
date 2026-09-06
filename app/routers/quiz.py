@@ -23,8 +23,8 @@ from app.schemas.quiz import (
 )
 from app.services.quiz_access import can_access_category
 from app.services.scoring import calculate_ball, compute_time_limit_ms
-from app.services.streak import update_streak
 from app.services.xp_award import compute_xp_eligible_ball
+from app.services import wallet
 
 router = APIRouter()
 
@@ -277,7 +277,7 @@ async def answer_question(
 
     current_user.total_xp += xp_earned
     current_user.games_played += 1
-    update_streak(current_user, now)
+    await wallet.on_game_finished(db, current_user, now, is_first_game_ever=current_user.games_played == 1)
     db.add(XpEvent(user_id=current_user.id, amount=xp_earned))
 
     try:

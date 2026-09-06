@@ -20,6 +20,10 @@ MAX_EMAIL_LEN = 255
 class RegisterRequest(BaseModel):
     email: EmailStr = Field(..., max_length=MAX_EMAIL_LEN, examples=["ali@example.com"])
     password: str = Field(..., min_length=6, max_length=MAX_PASSWORD_LEN, examples=["Parol1234"])
+    # Ixtiyoriy - do'stning taklif kodi (`User.referral_code`). Noto'g'ri/
+    # mavjud bo'lmagan kod bo'lsa ham ro'yxatdan o'tish davom etadi, faqat
+    # jimgina e'tiborga olinmaydi (ro'yxatdan o'tishni bloklamaslik uchun).
+    referral_code: str | None = Field(None, max_length=12)
 
     @field_validator("password")
     @classmethod
@@ -40,6 +44,9 @@ class TokenResponse(BaseModel):
 
 class GoogleAuthRequest(BaseModel):
     id_token: str = Field(..., description="Google ID token")
+    # `RegisterRequest.referral_code` bilan bir xil - faqat YANGI (birinchi
+    # marta Google orqali kiruvchi) hisob uchun e'tiborga olinadi.
+    referral_code: str | None = Field(None, max_length=12)
 
 
 class RefreshRequest(BaseModel):
@@ -106,6 +113,13 @@ class UserResponse(BaseModel):
     study_place: str | None
     quiz_liking: str | None
 
+    # Coin/Diamond iqtisodiyoti - [[ai_cost_architecture]]. Bu yerda
+    # (leaderboard/stats emas) - hisob darajasidagi holat, har safar Home
+    # yuklanganda `GET /auth/me` orqali allaqachon olinadi.
+    coin_balance: int
+    diamond_balance: int
+    referral_code: str | None
+
     model_config = {"from_attributes": True}
 
     @classmethod
@@ -126,4 +140,7 @@ class UserResponse(BaseModel):
             interests=user.interests,
             study_place=user.study_place,
             quiz_liking=user.quiz_liking,
+            coin_balance=user.coin_balance,
+            diamond_balance=user.diamond_balance,
+            referral_code=user.referral_code,
         )

@@ -74,7 +74,7 @@ def _install_fake_client(monkeypatch, responses: list):
 async def test_succeeds_immediately_when_first_attempt_is_ok(monkeypatch):
     _install_fake_client(monkeypatch, [_make_response(200, FAKE_SUCCESS_BODY)])
     result = await call_gemini("prompt", response_schema=_TRIVIAL_SCHEMA)
-    assert result == "[]"
+    assert result.text == "[]"
 
 
 @pytest.mark.anyio
@@ -84,7 +84,7 @@ async def test_retries_after_a_network_error_then_succeeds(monkeypatch):
         [httpx.ConnectError("bo'ldi", request=httpx.Request("POST", "https://example.com")), _make_response(200, FAKE_SUCCESS_BODY)],
     )
     result = await call_gemini("prompt", response_schema=_TRIVIAL_SCHEMA)
-    assert result == "[]"
+    assert result.text == "[]"
 
 
 @pytest.mark.anyio
@@ -94,7 +94,7 @@ async def test_retries_after_a_503_then_succeeds(monkeypatch):
         [_make_response(503, {"error": {"message": "overloaded"}}), _make_response(200, FAKE_SUCCESS_BODY)],
     )
     result = await call_gemini("prompt", response_schema=_TRIVIAL_SCHEMA)
-    assert result == "[]"
+    assert result.text == "[]"
 
 
 @pytest.mark.anyio
@@ -104,7 +104,7 @@ async def test_retries_after_a_429_then_succeeds(monkeypatch):
         [_make_response(429, {"error": {"message": "quota"}}), _make_response(200, FAKE_SUCCESS_BODY)],
     )
     result = await call_gemini("prompt", response_schema=_TRIVIAL_SCHEMA)
-    assert result == "[]"
+    assert result.text == "[]"
 
 
 @pytest.mark.anyio

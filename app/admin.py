@@ -10,9 +10,12 @@ from sqladmin import ModelView
 from sqladmin.authentication import AuthenticationBackend
 
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
+from app.models.currency_transaction import CurrencyTransaction
 from app.models.question_submission import QuestionSubmission
 from app.models.quiz import Category, Question
 from app.models.reported_question import ReportedQuestion
+from app.models.user import User
 
 _OPTION_FIELD_NAMES = ["option_1", "option_2", "option_3", "option_4"]
 
@@ -161,3 +164,68 @@ class QuestionSubmissionAdmin(ModelView, model=QuestionSubmission):
     column_searchable_list = [QuestionSubmission.question_text]
     column_sortable_list = [QuestionSubmission.id, QuestionSubmission.status, QuestionSubmission.created_at]
     column_default_sort = [(QuestionSubmission.created_at, True)]
+
+
+class CurrencyTransactionAdmin(ModelView, model=CurrencyTransaction):
+    """Coin/Diamond daftari - asosan faqat kuzatish uchun (ledger qatorlari
+    tarixiy hujjat, tahrirlanmaydi/o'chirilmaydi), lekin admin bu YERDAN
+    YANGI qator YARATIB qo'lda balans tuzatishi mumkin (masalan xatolik
+    yuz berganda kompensatsiya). Yaratishda `reason` avtomatik
+    "admin_adjustment"ga, `balance_after` esa foydalanuvchining YANGI
+    balansiga o'rnatiladi - ikkalasi ham qo'lda kiritilmaydi."""
+
+    name = "Coin/Diamond tranzaksiyasi"
+    name_plural = "Coin/Diamond tarixi"
+    icon = "fa-solid fa-coins"
+
+    can_edit = False
+    can_delete = False
+
+    column_list = [
+        CurrencyTransaction.id,
+        CurrencyTransaction.user_id,
+        CurrencyTransaction.currency,
+        CurrencyTransaction.amount,
+        CurrencyTransaction.reason,
+        CurrencyTransaction.balance_after,
+        CurrencyTransaction.created_at,
+    ]
+    column_searchable_list = [CurrencyTransaction.user_id]
+    column_sortable_list = [CurrencyTransaction.created_at, CurrencyTransaction.currency]
+    column_default_sort = [(CurrencyTransaction.created_at, True)]
+
+    form_columns = [CurrencyTransaction.user_id, CurrencyTransaction.currency, CurrencyTransaction.amount]
+
+    async def scaffold_form(self):
+        form_class = await super().scaffold_form()
+        form_class.currency = SelectField(
+            "Valyuta", choices=[("coin", "Coin"), ("diamond", "Diamond")], validators=[DataRequired()]
+        )
+        return form_class
+
+    async def on_model_change(self, data: dict, model, is_created: bool, request: Request) -> None:
+        if not is_created:
+            # `can_edit = False` bo'lgani uchun bu holat aslida yuz
+            # bermaydi, lekin xavfsizlik uchun ikki marta tekshiramiz.
+            return
+
+        user_id = data.get("user_id")
+        currency = data.get("currency")
+        amount = int(data.get("amount") or 0)
+
+        async with AsyncSessionLocal() as db:
+            user = await db.get(User, user_id)
+            if user is None:
+                raise ValueError(f"Foydalanuvchi topilmadi: {user_id}")
+            if currency == "coin":
+                user.coin_balance += amount
+                balance_after = user.coin_balance
+            elif currency == "diamond":
+                user.diamond_balance += amount
+                balance_after = user.diamond_balance
+            else:
+                raise ValueError(f"Noma'lum valyuta: {currency}")
+            await db.commit()
+
+        data["reason"] = "admin_adjustment"
+        data["balance_after"] = balance_after

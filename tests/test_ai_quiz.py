@@ -20,7 +20,7 @@ from app.routers.categories import list_categories
 from app.routers.quiz import start_quiz
 from app.schemas.ai_quiz import ManualQuestionIn, ManualQuizCreate, TopicUpdate, VisibilityUpdate
 from app.schemas.quiz import QuizStartRequest
-from app.services.ai_quiz_generation import QuizGenerationError, _validate_questions
+from app.services.ai_quiz_generation import GeneratedQuiz, QuizGenerationError, _validate_questions
 from app.services.document_text import UnsupportedDocumentError, extract_text
 from conftest import make_request
 
@@ -31,11 +31,11 @@ FAKE_QUESTIONS = [
 
 
 async def _fake_generate_questions(text, instruction, question_count):
-    return FAKE_QUESTIONS[:question_count]
+    return GeneratedQuiz(questions=FAKE_QUESTIONS[:question_count], input_tokens=100, output_tokens=100)
 
 
 async def _fake_generate_questions_from_topic(topic, instruction, question_count):
-    return FAKE_QUESTIONS[:question_count]
+    return GeneratedQuiz(questions=FAKE_QUESTIONS[:question_count], input_tokens=100, output_tokens=100)
 
 
 def _upload(filename: str, content: bytes) -> UploadFile:
@@ -43,7 +43,11 @@ def _upload(filename: str, content: bytes) -> UploadFile:
 
 
 async def _create_user(db, email="user@example.com") -> User:
-    user = User(email=email, hashed_password=hash_password("Parol1234"))
+    # Katta Diamond balansi - bu fayldagi testlar AI-generatsiyani ko'p
+    # marta chaqiradi, balans yetarli emasligi sababli 402 bilan
+    # to'xtamasligi uchun (haqiqiy narx bu yerda ahamiyatsiz - fake
+    # generatsiya funksiyalari doim kichik, sobit token soni qaytaradi).
+    user = User(email=email, hashed_password=hash_password("Parol1234"), diamond_balance=100_000)
     db.add(user)
     await db.flush()
     return user

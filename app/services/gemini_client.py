@@ -8,6 +8,7 @@ o'z domenidagi xatoga (masalan `QuizGenerationError`) o'rab qaytaradi."""
 
 import asyncio
 import logging
+from dataclasses import dataclass
 
 import httpx
 
@@ -40,6 +41,18 @@ class GeminiCallError(Exception):
     qaysi xususiyat chaqirayotganini bilmaydi."""
 
 
+@dataclass(frozen=True)
+class GeminiResponse:
+    """`call_gemini`ning to'liq natijasi - matn (schema'ga mos JSON string)
+    va Diamond narxlashda ishlatiladigan haqiqiy token sarfi (`usage`,
+    Interactions API javobida `steps`ga qo'shni, top-level maydon -
+    https://ai.google.dev/api/interactions-api)."""
+
+    text: str
+    input_tokens: int
+    output_tokens: int
+
+
 def _extract_gemini_error_message(response: httpx.Response) -> str | None:
     # Gemini xato javobi odatda {"error": {"code":..., "message":..., "status":...}}
     # shaklida keladi - buni foydalanuvchiga ko'rsatilsa, muammoni tezroq
@@ -51,11 +64,12 @@ def _extract_gemini_error_message(response: httpx.Response) -> str | None:
     return str(message)[:300] if message else None
 
 
-async def call_gemini(prompt: str, *, response_schema: dict, use_search: bool = False) -> str:
+async def call_gemini(prompt: str, *, response_schema: dict, use_search: bool = False) -> GeminiResponse:
     """Gemini Interactions API'ga structured-JSON so'rov yuboradi va
     modelning matn chiqishini (odatda JSON string, `response_schema`ga mos)
-    qaytaradi. Vaqtinchalik xatolarda (tarmoq, 429/5xx) eksponensial kutish
-    bilan qayta urinadi."""
+    HAMDA haqiqiy token sarfini (`GeminiResponse.input_tokens`/
+    `output_tokens` - Diamond narxlash uchun) qaytaradi. Vaqtinchalik
+    xatolarda (tarmoq, 429/5xx) eksponensial kutish bilan qayta urinadi."""
     if not settings.GEMINI_API_KEY:
         raise GeminiCallError("AI xizmati hozircha sozlanmagan")
 
@@ -112,7 +126,7 @@ async def call_gemini(prompt: str, *, response_schema: dict, use_search: bool = 
 
     try:
         data = response.json()
-        return next(
+        text = next(
             content["text"]
             for step in data["steps"]
             if step.get("type") == "model_output"
@@ -122,3 +136,13 @@ async def call_gemini(prompt: str, *, response_schema: dict, use_search: bool = 
     except (KeyError, StopIteration, ValueError) as exc:
         logger.exception("Gemini javobini o'qib bo'lmadi")
         raise GeminiCallError("AI javobini qayta ishlab bo'lmadi") from exc
+
+    # `usage` yo'q/noto'liq bo'lsa ham (masalan kelajakda API javobi
+    # o'zgarsa) butun so'rov muvaffaqiyatsiz bo'lib qolmasin - 0 bilan
+    # davom etamiz (Diamond narxlash bu holda kamida 1ga tushadi, real
+    # xarajatni "yo'qotib qo'yish"dan ko'ra unchalik katta emas).
+    usage = data.get("usage") or {}
+    input_tokens = int(usage.get("total_input_tokens") or 0)
+    output_tokens = int(usage.get("total_output_tokens") or 0)
+
+    return GeminiResponse(text=text, input_tokens=input_tokens, output_tokens=output_tokens)
