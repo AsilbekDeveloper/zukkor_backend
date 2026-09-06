@@ -38,5 +38,12 @@ class AiQuizGenerationJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Faqat status='completed' bo'lganda to'ldiriladi - shu generatsiya
+    # uchun haqiqiy token sarfidan yechilgan Diamond miqdori
+    # ([[ai_cost_architecture]]). Foydalanuvchiga "nechta Diamond
+    # ishlatildi" deb ko'rsatish uchun - polling orqali (`GET
+    # /ai-quiz/generate-async/{job_id}`) shu yerdan qaytariladi.
+    diamond_cost: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     def __str__(self) -> str:
         return f"#{self.id} ({self.status})"

@@ -6,6 +6,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from app.core.config import settings
 from app.core.database import AsyncSessionLocal, get_db
 from app.core.limiter import limiter
 from app.dependencies.auth import get_current_user
@@ -39,18 +40,14 @@ MAX_QUESTION_COUNT = 20
 MAX_TOPIC_LENGTH = 300
 VALID_VISIBILITIES = {"private", "friends", "public"}
 
-# Diamond-yetarlilikni OLDINDAN (Gemini'ga so'rov yuborishdan oldin) tekshirish
-# uchun tахminiy hisob - haqiqiy narx har doim generatsiya TUGAGANDAN keyin,
-# haqiqiy token sonidan qayta hisoblanadi (`wallet.diamond_cost_from_tokens`).
-_CHARS_PER_TOKEN_ESTIMATE = 4
-
-
 def _estimate_input_tokens(text_or_bytes: str | bytes) -> int:
     # Fayl hali matnga ajratilmagan bo'lsa (masalan `/generate-async`ning
     # oldindan-tekshiruvi) xom bayt uzunligi ishlatiladi - PDF/DOCX kabi
     # formatlar odatda o'z matnidan KO'PROQ bayt egallaydi, shuning uchun
     # bu haqiqiy token sonini OSHIRIB (xavfsiz tomonga) taxmin qiladi.
-    return max(1, len(text_or_bytes) // _CHARS_PER_TOKEN_ESTIMATE)
+    # `CHARS_PER_TOKEN_ESTIMATE` - `settings`da (Flutter bilan bir xil
+    # formula, `GET /wallet/pricing` orqali) - lokal doim emas.
+    return max(1, len(text_or_bytes) // settings.CHARS_PER_TOKEN_ESTIMATE)
 
 # Ro'yxat/Discover so'rovlarida quiz'ning mavzu-kategoriyasi nomini bitta
 # JOIN bilan olish uchun - har bir qatorga alohida so'rov yubormaslik uchun.
@@ -221,6 +218,7 @@ async def generate_ai_quiz(
         visibility=category.visibility,
         topic_category_id=category.topic_category_id,
         topic_category_name=topic_category_name,
+        diamond_cost=diamond_cost,
     )
 
 
@@ -267,6 +265,7 @@ async def _run_generation_job(
             # Diamond FAQAT muvaffaqiyatli generatsiyadan keyin, haqiqiy
             # token sarfidan yechiladi - `generate_ai_quiz` (sinxron yo'l)
             # bilan bir xil mantiq, [[ai_cost_architecture]].
+            diamond_cost = None
             if user is not None:
                 diamond_cost = wallet.diamond_cost_from_tokens(result.input_tokens, result.output_tokens)
                 await wallet.debit_diamond(
@@ -308,6 +307,7 @@ async def _run_generation_job(
 
             job.status = "completed"
             job.category_id = category.id
+            job.diamond_cost = diamond_cost
             job.finished_at = datetime.now(timezone.utc)
             await db.commit()
 
@@ -435,6 +435,7 @@ async def get_generation_job(
                 visibility=category.visibility,
                 topic_category_id=category.topic_category_id,
                 topic_category_name=topic_category_name,
+                diamond_cost=job.diamond_cost,
             )
 
     return GenerationJobOut(job_id=job.id, status=job.status, quiz=quiz_out, error=job.error_message)

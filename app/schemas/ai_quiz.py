@@ -12,6 +12,13 @@ class AiQuizOut(BaseModel):
     # Denormalized so the client doesn't need a second round-trip just to
     # show a category chip - same idea as DiscoverQuizOut.owner_username.
     topic_category_name: str | None = None
+    # Faqat AI-generatsiyadan TO'G'RIDAN-TO'G'RI qaytgan javoblarda
+    # to'ldiriladi (sinxron /generate javobi, yoki /generate-async job
+    # tugagach) - keyinchalik ro'yxat/discover orqali o'qilganda har doim
+    # null (bu maydon "hozirgina nechta Diamond ishlatildi" degan bir martalik
+    # kvitansiya, quiz'ning doimiy xususiyati emas). Manual quizlarda ham
+    # doim null - [[ai_cost_architecture]].
+    diamond_cost: int | None = None
 
 
 class DiscoverQuizOut(AiQuizOut):

@@ -2,13 +2,33 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.currency_transaction import CurrencyTransaction
 from app.models.user import User
-from app.schemas.wallet import WalletTransactionsOut
+from app.schemas.wallet import DiamondPricingOut, WalletTransactionsOut
 
 router = APIRouter()
+
+
+@router.get(
+    "/pricing",
+    response_model=DiamondPricingOut,
+    summary="Diamond narxlash formulasi",
+    description="Flutter shu formulani (bir marta, keshlab) olib, "
+    "generatsiyadan OLDIN taxminiy narxni serverga so'rovsiz, jonli "
+    "hisoblab ko'rsatishi uchun. Haqiqiy (final) narx baribir har doim "
+    "serverda, generatsiya tugagach hisoblanadi.",
+)
+async def get_diamond_pricing():
+    return DiamondPricingOut(
+        input_usd_per_1m_tokens=settings.GEMINI_2027_INPUT_USD_PER_1M_TOKENS,
+        output_usd_per_1m_tokens=settings.GEMINI_2027_OUTPUT_USD_PER_1M_TOKENS,
+        diamond_markup_multiplier=settings.DIAMOND_MARKUP_MULTIPLIER,
+        usd_per_diamond=settings.USD_PER_DIAMOND,
+        chars_per_token_estimate=settings.CHARS_PER_TOKEN_ESTIMATE,
+    )
 
 
 @router.get(

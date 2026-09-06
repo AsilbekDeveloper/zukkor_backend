@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.security import hash_password
 from app.models.currency_transaction import CurrencyTransaction
 from app.models.user import User
+from app.routers.wallet import get_diamond_pricing
 from app.services import wallet
 
 
@@ -49,6 +50,16 @@ def test_estimate_diamond_cost_grows_with_question_count():
     small = wallet.estimate_diamond_cost(estimated_input_tokens=100, question_count=1)
     large = wallet.estimate_diamond_cost(estimated_input_tokens=100, question_count=20)
     assert large > small
+
+
+@pytest.mark.anyio
+async def test_diamond_pricing_endpoint_matches_settings():
+    result = await get_diamond_pricing()
+    assert result.input_usd_per_1m_tokens == settings.GEMINI_2027_INPUT_USD_PER_1M_TOKENS
+    assert result.output_usd_per_1m_tokens == settings.GEMINI_2027_OUTPUT_USD_PER_1M_TOKENS
+    assert result.diamond_markup_multiplier == settings.DIAMOND_MARKUP_MULTIPLIER
+    assert result.usd_per_diamond == settings.USD_PER_DIAMOND
+    assert result.chars_per_token_estimate == settings.CHARS_PER_TOKEN_ESTIMATE
 
 
 # --- Signup bonusi + referral kod ---

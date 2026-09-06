@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     # generatsiya nechta Diamond turadi" hisobini chiqarish uchun kerak,
     # yakuniy paket kursi bilan albatta qayta ko'rib chiqiladi.
     USD_PER_DIAMOND: float = 0.001
+    # Taxminiy token soni = belgilar soni / shu son (Diamond yetarliligini
+    # generatsiya BOSHLANISHIDAN oldin taxminiy tekshirish uchun - haqiqiy
+    # narx har doim generatsiya tugagach, haqiqiy token sonidan hisoblanadi).
+    # `GET /wallet/pricing` orqali Flutter'ga ham beriladi - shu bilan
+    # ilova serverga so'rov yubormasdan JONLI taxmin ko'rsata oladi.
+    CHARS_PER_TOKEN_ESTIMATE: int = 4
 
     # Telegram bot - Diamond sotib olish kanali. @BotFather'dan olinadi
     # (foydalanuvchi o'zi qiladi - bu qadamni Claude bosib chiqolmaydi).
