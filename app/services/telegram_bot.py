@@ -41,9 +41,36 @@ async def _find_user_by_telegram_id(db: AsyncSession, telegram_user_id: int) -> 
 
 
 async def _handle_start(db: AsyncSession, telegram_user_id: int, chat_id: int) -> None:
+    """`/start` - HAR DOIM shunchaki tanishtiruv (nima uchun bot ekanini
+    tushuntiradi), hech qachon o'zi kod generatsiya qilmaydi va hech
+    qachon menyu ko'rsatmaydi - bular alohida buyruqlar (`/link`,
+    `/diamond`). Bitta buyruq bir ishni qiladi, foydalanuvchi keyingi
+    qadamni aniq bilib oladi (2026-09-06, foydalanuvchi ko'rsatmasi
+    bilan qayta loyihalandi)."""
     existing_user = await _find_user_by_telegram_id(db, telegram_user_id)
     if existing_user is not None:
-        await _send_diamond_menu(chat_id, existing_user)
+        await telegram_client.send_message(
+            chat_id,
+            "Xush kelibsiz, Zukkor botiga qaytganingizdan xursandmiz! \U0001f44b\n\n"
+            "Hisobingiz allaqachon ulangan - Diamond sotib olish uchun /diamond yozing.",
+        )
+        return
+
+    await telegram_client.send_message(
+        chat_id,
+        "Assalomu alaykum! Bu - Zukkor viktorina ilovasining rasmiy boti \U0001f44b\n\n"
+        "Bu yerda Zukkor ilovasidagi hisobingizga Diamond (test yaratish uchun "
+        "ishlatiladigan valyuta) sotib olishingiz mumkin bo'ladi.\n\n"
+        "Boshlash uchun hisobingizni ulang: /link",
+    )
+
+
+async def _handle_link_command(db: AsyncSession, telegram_user_id: int, chat_id: int) -> None:
+    existing_user = await _find_user_by_telegram_id(db, telegram_user_id)
+    if existing_user is not None:
+        await telegram_client.send_message(
+            chat_id, "Hisobingiz allaqachon ulangan. Diamond sotib olish uchun /diamond yozing.",
+        )
         return
 
     # Kod to'qnashuvi ehtimoli juda kichik (1/1_000_000), lekin baribir
@@ -69,8 +96,7 @@ async def _handle_start(db: AsyncSession, telegram_user_id: int, chat_id: int) -
 
     await telegram_client.send_message(
         chat_id,
-        "Assalomu alaykum! Zukkor hisobingizni ulash uchun quyidagi kodni "
-        "ilovada kiriting:\n\n"
+        "Zukkor hisobingizni ulash uchun quyidagi kodni ilovada kiriting:\n\n"
         f"<b>{code}</b>\n\n"
         "Ilova: Profil → Sozlamalar → Telegram bilan bog'lash.\n"
         "Kod 10 daqiqa amal qiladi.",
@@ -95,7 +121,7 @@ async def _handle_diamond_command(db: AsyncSession, telegram_user_id: int, chat_
     if user is None:
         await telegram_client.send_message(
             chat_id,
-            "Hisobingiz hali ulanmagan. Ulash uchun /start yozing.",
+            "Hisobingiz hali ulanmagan. Ulash uchun /link yozing.",
         )
         return
     await _send_diamond_menu(chat_id, user)
@@ -111,7 +137,7 @@ async def _handle_buy_callback(
 
     user = await _find_user_by_telegram_id(db, telegram_user_id)
     if user is None:
-        await telegram_client.answer_callback_query(callback_query_id, "Avval /start orqali hisobni ulang")
+        await telegram_client.answer_callback_query(callback_query_id, "Avval /link orqali hisobni ulang")
         return
 
     await wallet.credit_diamond(
@@ -150,11 +176,13 @@ async def handle_update(db: AsyncSession, update: dict) -> None:
 
             if text.startswith("/start"):
                 await _handle_start(db, telegram_user_id, chat_id)
+            elif text.startswith("/link"):
+                await _handle_link_command(db, telegram_user_id, chat_id)
             elif text.startswith("/diamond"):
                 await _handle_diamond_command(db, telegram_user_id, chat_id)
             else:
                 await telegram_client.send_message(
-                    chat_id, "Balans va Diamond sotib olish uchun /diamond yozing."
+                    chat_id, "Hisobni ulash uchun /link, Diamond sotib olish uchun /diamond yozing."
                 )
 
         elif callback_query is not None:

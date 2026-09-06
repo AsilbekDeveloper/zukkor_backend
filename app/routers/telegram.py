@@ -9,7 +9,7 @@ from app.dependencies.auth import get_current_user
 from app.models.telegram_link_code import TelegramLinkCode
 from app.models.user import User
 from app.schemas.telegram import TelegramLinkOut, TelegramLinkRequest
-from app.services import telegram_bot
+from app.services import telegram_bot, telegram_client
 
 router = APIRouter()
 
@@ -78,5 +78,15 @@ async def link_telegram_account(
     current_user.telegram_user_id = link_code.telegram_user_id
     link_code.is_used = True
     await db.commit()
+
+    # Ilova o'zi "Muvaffaqiyatli bog'landi!" deb ko'rsatadi, lekin bot
+    # tomonda hech narsa ko'rinmasa foydalanuvchi "hech narsa bo'lmadi"
+    # deb o'ylashi mumkin (aynan shu holat sinovda uchradi) - shuning
+    # uchun bot ham darhol tasdiq xabarini yuboradi.
+    await telegram_client.send_message(
+        link_code.telegram_chat_id,
+        "✅ Zukkor hisobingiz muvaffaqiyatli bog'landi!\n\n"
+        "Diamond sotib olish uchun /diamond yozing.",
+    )
 
     return TelegramLinkOut(diamond_balance=current_user.diamond_balance, coin_balance=current_user.coin_balance)

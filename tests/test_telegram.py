@@ -43,10 +43,23 @@ async def _create_code(db, *, code: str = "123456", telegram_user_id: int = 555,
 
 
 @pytest.mark.anyio
-async def test_start_command_creates_a_link_code_for_a_new_telegram_user(db_session):
+async def test_start_command_never_creates_a_link_code(db_session):
+    # /start endi faqat tanishtiruv xabari - kod generatsiyasi /link'ga
+    # ko'chirildi (2026-09-06, foydalanuvchi ko'rsatmasi bilan).
     await telegram_bot.handle_update(
         db_session,
         {"message": {"text": "/start", "from": {"id": 111}, "chat": {"id": 222}}},
+    )
+
+    codes = (await db_session.execute(select(TelegramLinkCode))).scalars().all()
+    assert codes == []
+
+
+@pytest.mark.anyio
+async def test_link_command_creates_a_link_code_for_a_new_telegram_user(db_session):
+    await telegram_bot.handle_update(
+        db_session,
+        {"message": {"text": "/link", "from": {"id": 111}, "chat": {"id": 222}}},
     )
 
     code = (await db_session.execute(select(TelegramLinkCode))).scalar_one()
@@ -57,13 +70,13 @@ async def test_start_command_creates_a_link_code_for_a_new_telegram_user(db_sess
 
 
 @pytest.mark.anyio
-async def test_start_command_for_an_already_linked_user_does_not_create_a_new_code(db_session):
+async def test_link_command_for_an_already_linked_user_does_not_create_a_new_code(db_session):
     await _create_user(db_session, "a@example.com", telegram_user_id=111)
     await db_session.commit()
 
     await telegram_bot.handle_update(
         db_session,
-        {"message": {"text": "/start", "from": {"id": 111}, "chat": {"id": 222}}},
+        {"message": {"text": "/link", "from": {"id": 111}, "chat": {"id": 222}}},
     )
 
     codes = (await db_session.execute(select(TelegramLinkCode))).scalars().all()
