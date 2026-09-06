@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,10 +16,68 @@ from app.schemas.history import (
     HistoryLobbyOut,
     HistoryOpponentOut,
     HistoryOut,
+    WeeklyActivityOut,
 )
 from app.services.display_name import display_name as _display_name
 
 router = APIRouter()
+
+
+@router.get("/weekly-activity", response_model=WeeklyActivityOut, summary="So'nggi 7 kunlik faollik")
+async def get_weekly_activity(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Oxirgi 7 kun (bugundan boshlab orqaga - dushanba-yakshanba emas,
+    "rolling" oyna) ichida qaysi kunlarda kamida bitta o'yin (Solo/Duel/
+    Lobby, istalgan turi) tugatilganini qaytaradi - Home'dagi "haftalik
+    faollik" nuqta qatori uchun. Sana (vaqt zonasisiz) bo'yicha
+    taqqoslanadi - SQLite'ning `finished_at`ni tzinfo'siz o'qib
+    qaytarishi bilan ham to'g'ri ishlashi uchun.
+    """
+    today = datetime.now(timezone.utc).date()
+    window_start = today - timedelta(days=6)
+
+    solo_dates = (
+        await db.execute(
+            select(func.date(QuizSession.finished_at))
+            .where(QuizSession.user_id == current_user.id, QuizSession.finished_at.is_not(None))
+            .distinct()
+        )
+    ).scalars().all()
+
+    duel_dates = (
+        await db.execute(
+            select(func.date(Duel.finished_at))
+            .where(
+                or_(Duel.user_a_id == current_user.id, Duel.user_b_id == current_user.id),
+                Duel.status == "finished",
+            )
+            .distinct()
+        )
+    ).scalars().all()
+
+    lobby_dates = (
+        await db.execute(
+            select(func.date(LobbyGame.finished_at))
+            .select_from(LobbyGameResult)
+            .join(LobbyGame, LobbyGame.id == LobbyGameResult.lobby_game_id)
+            .where(LobbyGameResult.user_id == current_user.id)
+            .distinct()
+        )
+    ).scalars().all()
+
+    played_dates: set[str] = set()
+    for raw in (*solo_dates, *duel_dates, *lobby_dates):
+        if raw is None:
+            continue
+        # SQLite/Postgres ikkalasi ham `func.date()`dan matn yoki `date`
+        # obyekti qaytarishi mumkin (drayverga qarab) - ikkalasini ham
+        # 'YYYY-MM-DD' matniga keltiramiz.
+        played_dates.add(str(raw)[:10])
+
+    days = [(window_start + timedelta(days=i)).isoformat() in played_dates for i in range(7)]
+    return WeeklyActivityOut(days=days)
 
 
 async def _get_solo_entries(db: AsyncSession, user_id: str, limit: int) -> list[HistoryEntryOut]:

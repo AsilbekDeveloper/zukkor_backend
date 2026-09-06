@@ -38,3 +38,9 @@ class HistoryEntryOut(BaseModel):
 class HistoryOut(BaseModel):
     entries: list[HistoryEntryOut]
     has_more: bool
+
+
+class WeeklyActivityOut(BaseModel):
+    # 7 ta bool, eng eskisi birinchi, bugun oxirgi - Home'dagi "haftalik
+    # faollik" nuqta qatori shu tartibda chiziladi.
+    days: list[bool]

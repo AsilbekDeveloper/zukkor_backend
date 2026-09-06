@@ -33,6 +33,28 @@ class User(Base):
     games_played: Mapped[int] = mapped_column(Integer, default=0)
     last_played_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Yutuqlar (achievements) tizimi uchun - Home'da ko'rsatiladigan doimiy
+    # (bir marta erishilsa hech qachon pasaymaydigan) nishonlar. `total_xp`
+    # va `longest_streak` allaqachon shu xususiyatga ega (hech qachon
+    # kamaymaydi) - bu ikkitasi esa xuddi shunday "eng yaxshi natija"
+    # bo'lishi uchun alohida saqlanadi.
+    #
+    # Faqat Duel g'alabalari hisoblanadi (`total_wins`) - Solo'da raqib
+    # yo'q (g'alaba tushunchasi yo'q), Lobby'da "g'alaba" nima ekanligi
+    # (faqat 1-o'rinmi?) noaniq - Duel esa 1v1, "yutish" tushunchasi
+    # allaqachon `Duel.user_a_result`/`user_b_result` orqali aniq
+    # belgilangan.
+    total_wins: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Reyting (`rank`) hech qachon saqlanmaydi - har doim so'rov paytida
+    # jonli hisoblanadi (`ORDER BY total_xp DESC`) - shuning uchun "eng
+    # yaxshi qachondir erishilgan o'rin" ni bilish uchun alohida maydon
+    # kerak. Past qiymat = yaxshiroq o'rin, shuning uchun faqat KAMAYSA
+    # yangilanadi (`app/routers/leaderboard.py`dagi `get_player_stats`
+    # ichida, statistikani har safar hisoblashda - alohida fon-jarayon
+    # kerak emas).
+    best_rank_achieved: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     interests: Mapped[list | None] = mapped_column(JSON, nullable=True)
     study_place: Mapped[str | None] = mapped_column(String(50), nullable=True)
     quiz_liking: Mapped[str | None] = mapped_column(String(20), nullable=True)

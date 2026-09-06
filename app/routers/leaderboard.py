@@ -203,6 +203,16 @@ async def get_player_stats(
     user = await db.get(User, user_id)
     level, level_title, next_level_xp, current_level_xp = compute_level(row.total_xp)
 
+    # `rank` yuqorida har doim jonli hisoblanadi (hech qachon saqlanmaydi) -
+    # "eng yaxshi qachondir erishilgan o'rin" yutug'i uchun shu yerda
+    # opportunistik ravishda yangilanadi (past qiymat = yaxshiroq o'rin,
+    # shuning uchun faqat KAMAYSA yoki hali umuman bo'lmasa yangilanadi).
+    # Alohida fon-jarayon shart emas - statistika har safar so'ralganda
+    # (deyarli har o'yindan keyin, Home/Profil ochilganda) tekshiriladi.
+    if user.best_rank_achieved is None or row.rank < user.best_rank_achieved:
+        user.best_rank_achieved = row.rank
+        await db.commit()
+
     return PlayerStatsOut(
         user_id=row.id,
         rank=row.rank,
@@ -220,4 +230,6 @@ async def get_player_stats(
         longest_streak=user.longest_streak,
         games_played=user.games_played,
         win_rate_percent=win_rate,
+        total_wins=user.total_wins,
+        best_rank_achieved=user.best_rank_achieved,
     )

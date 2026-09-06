@@ -39,3 +39,5 @@ class PlayerStatsOut(BaseModel):
     longest_streak: int
     games_played: int
     win_rate_percent: int
+    total_wins: int
+    best_rank_achieved: int

@@ -529,12 +529,16 @@ async def _finish_duel(state: _ActiveDuel) -> None:
         if user_a is not None:
             user_a.total_xp += a_xp
             user_a.games_played += 1
+            if a_result == "won":
+                user_a.total_wins += 1
             update_streak(user_a, duel.finished_at)
             db.add(XpEvent(user_id=state.user_a_id, amount=a_xp))
 
         if user_b is not None:
             user_b.total_xp += b_xp
             user_b.games_played += 1
+            if b_result == "won":
+                user_b.total_wins += 1
             update_streak(user_b, duel.finished_at)
             db.add(XpEvent(user_id=state.user_b_id, amount=b_xp))
 
