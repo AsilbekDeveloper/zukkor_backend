@@ -119,6 +119,9 @@ class UserResponse(BaseModel):
     coin_balance: int
     diamond_balance: int
     referral_code: str | None
+    # Xom `telegram_user_id` emas - Flutter faqat "ulanganmi" holatini
+    # bilishi kerak, raqamning o'zi hech qayerda ishlatilmaydi.
+    telegram_linked: bool
 
     model_config = {"from_attributes": True}
 
@@ -143,4 +146,5 @@ class UserResponse(BaseModel):
             coin_balance=user.coin_balance,
             diamond_balance=user.diamond_balance,
             referral_code=user.referral_code,
+            telegram_linked=user.telegram_user_id is not None,
         )
