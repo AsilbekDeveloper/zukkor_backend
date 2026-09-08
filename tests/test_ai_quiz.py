@@ -8,11 +8,15 @@ from app.core.security import hash_password
 from app.models.quiz import Category, Question
 from app.models.user import User
 from app.routers.ai_quiz import (
+    add_quiz_question,
     create_manual_quiz,
     delete_ai_quiz,
+    delete_quiz_question,
     generate_ai_quiz,
     list_my_ai_quizzes,
+    list_quiz_questions,
     list_user_quizzes,
+    update_quiz_question,
     update_quiz_topic,
     update_quiz_visibility,
 )
@@ -544,4 +548,200 @@ async def test_update_quiz_topic_is_owner_only(db_session):
         await update_quiz_topic(
             quiz_id=created.id, payload=TopicUpdate(topic_category_id=topic.id), current_user=stranger, db=db_session
         )
+    assert exc_info.value.status_code == 404
+
+
+# --- add/edit/delete a single question on a manual quiz ---
+
+
+def _question_payload(text="Yangi savol?", correct=2):
+    return ManualQuestionIn(question_text=text, options=["a", "b", "c", "d"], correct_option_index=correct)
+
+
+@pytest.mark.anyio
+async def test_list_quiz_questions_returns_them_in_order(db_session):
+    user = await _create_user(db_session)
+    created = await create_manual_quiz(payload=_manual_payload(count=3), current_user=user, db=db_session)
+
+    questions = await list_quiz_questions(quiz_id=created.id, current_user=user, db=db_session)
+
+    assert [q.question_text for q in questions] == ["Savol 0?", "Savol 1?", "Savol 2?"]
+
+
+@pytest.mark.anyio
+async def test_list_quiz_questions_is_owner_only(db_session):
+    owner = await _create_user(db_session, "q_owner@example.com")
+    stranger = await _create_user(db_session, "q_stranger@example.com")
+    created = await create_manual_quiz(payload=_manual_payload(), current_user=owner, db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_quiz_questions(quiz_id=created.id, current_user=stranger, db=db_session)
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_list_quiz_questions_rejects_an_ai_generated_quiz(db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
+    user = await _create_user(db_session)
+    created = await generate_ai_quiz(
+        request=make_request(),
+        file=_upload("kitob.txt", b"matn"),
+        instruction="x",
+        topic=None,
+        question_count=2,
+        topic_category_id=None,
+        current_user=user,
+        db=db_session,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_quiz_questions(quiz_id=created.id, current_user=user, db=db_session)
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_add_quiz_question_appends_it(db_session):
+    user = await _create_user(db_session)
+    created = await create_manual_quiz(payload=_manual_payload(count=1), current_user=user, db=db_session)
+
+    added = await add_quiz_question(
+        quiz_id=created.id, payload=_question_payload("Uchinchi savol?"), current_user=user, db=db_session
+    )
+
+    assert added.question_text == "Uchinchi savol?"
+    questions = await list_quiz_questions(quiz_id=created.id, current_user=user, db=db_session)
+    assert len(questions) == 2
+
+
+@pytest.mark.anyio
+async def test_add_quiz_question_rejects_malformed_payload(db_session):
+    user = await _create_user(db_session)
+    created = await create_manual_quiz(payload=_manual_payload(count=1), current_user=user, db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await add_quiz_question(
+            quiz_id=created.id,
+            payload=ManualQuestionIn(question_text="", options=["a", "b", "c", "d"], correct_option_index=0),
+            current_user=user,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_add_quiz_question_enforces_the_max_count(db_session):
+    user = await _create_user(db_session)
+    created = await create_manual_quiz(payload=_manual_payload(count=20), current_user=user, db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await add_quiz_question(quiz_id=created.id, payload=_question_payload(), current_user=user, db=db_session)
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_add_quiz_question_rejects_an_ai_generated_quiz(db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
+    user = await _create_user(db_session)
+    created = await generate_ai_quiz(
+        request=make_request(),
+        file=_upload("kitob.txt", b"matn"),
+        instruction="x",
+        topic=None,
+        question_count=2,
+        topic_category_id=None,
+        current_user=user,
+        db=db_session,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await add_quiz_question(quiz_id=created.id, payload=_question_payload(), current_user=user, db=db_session)
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_update_quiz_question_changes_its_content(db_session):
+    user = await _create_user(db_session)
+    created = await create_manual_quiz(payload=_manual_payload(count=1), current_user=user, db=db_session)
+    [question] = await list_quiz_questions(quiz_id=created.id, current_user=user, db=db_session)
+
+    updated = await update_quiz_question(
+        quiz_id=created.id,
+        question_id=question.id,
+        payload=_question_payload("Tahrirlangan savol?", correct=3),
+        current_user=user,
+        db=db_session,
+    )
+
+    assert updated.question_text == "Tahrirlangan savol?"
+    assert updated.correct_option_index == 3
+
+
+@pytest.mark.anyio
+async def test_update_quiz_question_rejects_a_question_from_another_quiz(db_session):
+    user = await _create_user(db_session)
+    quiz_a = await create_manual_quiz(payload=_manual_payload(count=1), current_user=user, db=db_session)
+    quiz_b = await create_manual_quiz(payload=_manual_payload(count=1), current_user=user, db=db_session)
+    [question_b] = await list_quiz_questions(quiz_id=quiz_b.id, current_user=user, db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_quiz_question(
+            quiz_id=quiz_a.id, question_id=question_b.id, payload=_question_payload(), current_user=user, db=db_session
+        )
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_update_quiz_question_is_owner_only(db_session):
+    owner = await _create_user(db_session, "uq_owner@example.com")
+    stranger = await _create_user(db_session, "uq_stranger@example.com")
+    created = await create_manual_quiz(payload=_manual_payload(count=1), current_user=owner, db=db_session)
+    [question] = await list_quiz_questions(quiz_id=created.id, current_user=owner, db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_quiz_question(
+            quiz_id=created.id,
+            question_id=question.id,
+            payload=_question_payload(),
+            current_user=stranger,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_delete_quiz_question_soft_deletes_it(db_session):
+    user = await _create_user(db_session)
+    created = await create_manual_quiz(payload=_manual_payload(count=2), current_user=user, db=db_session)
+    [first, _second] = await list_quiz_questions(quiz_id=created.id, current_user=user, db=db_session)
+
+    await delete_quiz_question(quiz_id=created.id, question_id=first.id, current_user=user, db=db_session)
+
+    remaining = await list_quiz_questions(quiz_id=created.id, current_user=user, db=db_session)
+    assert len(remaining) == 1
+    assert remaining[0].id != first.id
+
+
+@pytest.mark.anyio
+async def test_delete_quiz_question_blocks_removing_the_last_one(db_session):
+    user = await _create_user(db_session)
+    created = await create_manual_quiz(payload=_manual_payload(count=1), current_user=user, db=db_session)
+    [only] = await list_quiz_questions(quiz_id=created.id, current_user=user, db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_quiz_question(quiz_id=created.id, question_id=only.id, current_user=user, db=db_session)
+    assert exc_info.value.status_code == 400
+
+    remaining = await list_quiz_questions(quiz_id=created.id, current_user=user, db=db_session)
+    assert len(remaining) == 1
+
+
+@pytest.mark.anyio
+async def test_delete_quiz_question_is_owner_only(db_session):
+    owner = await _create_user(db_session, "dq_owner@example.com")
+    stranger = await _create_user(db_session, "dq_stranger@example.com")
+    created = await create_manual_quiz(payload=_manual_payload(count=2), current_user=owner, db=db_session)
+    [first, _second] = await list_quiz_questions(quiz_id=created.id, current_user=owner, db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await delete_quiz_question(quiz_id=created.id, question_id=first.id, current_user=stranger, db=db_session)
     assert exc_info.value.status_code == 404

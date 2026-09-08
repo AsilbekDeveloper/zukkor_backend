@@ -43,6 +43,18 @@ class ManualQuizCreate(BaseModel):
     topic_category_id: int | None = None
 
 
+class QuizQuestionOut(BaseModel):
+    """One question of a manual quiz - used by the add/edit/delete
+    endpoints so the owner can keep building on a quiz after it's
+    created, not just at creation time. AI-generated quizzes don't use
+    this - only `source == 'manual'` quizzes are editable."""
+
+    id: int
+    question_text: str
+    options: list[str]
+    correct_option_index: int
+
+
 class VisibilityUpdate(BaseModel):
     visibility: str  # 'private' | 'friends' | 'public'
 

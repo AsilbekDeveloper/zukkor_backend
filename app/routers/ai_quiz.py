@@ -19,7 +19,9 @@ from app.schemas.ai_quiz import (
     DiscoverQuizOut,
     GenerationJobOut,
     GenerationJobStartedOut,
+    ManualQuestionIn,
     ManualQuizCreate,
+    QuizQuestionOut,
     TopicUpdate,
     VisibilityUpdate,
 )
@@ -564,6 +566,147 @@ async def update_quiz_topic(
         topic_category_id=category.topic_category_id,
         topic_category_name=topic_category_name,
     )
+
+
+async def _get_owned_manual_quiz(db: AsyncSession, quiz_id: int, current_user: User) -> Category:
+    """Savol qo'shish/tahrirlash/o'chirish endpointlari uchun umumiy
+    ruxsat tekshiruvi - boshqa foydalanuvchining (yoki umuman mavjud
+    bo'lmagan) quizi ekanligini oshkor qilmaslik uchun 404, lekin
+    egasining O'ZI AI orqali yaratgan quizga urinsa buni aniq 400 bilan
+    aytamiz - bu holatda mavjudlikni yashirishning hojati yo'q, chunki
+    so'rovchi allaqachon shu quizning egasi."""
+    category = await db.get(Category, quiz_id)
+    if category is None or category.owner_user_id != current_user.id or not category.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topilmadi")
+    if category.source != "manual":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Faqat qo'lda yaratilgan quizlarning savollarini tahrirlash mumkin",
+        )
+    return category
+
+
+def _question_out(question: Question) -> QuizQuestionOut:
+    return QuizQuestionOut(
+        id=question.id,
+        question_text=question.question_text,
+        options=question.options,
+        correct_option_index=question.correct_option_index,
+    )
+
+
+@router.get(
+    "/{quiz_id}/questions",
+    response_model=list[QuizQuestionOut],
+    summary="Qo'lda yaratilgan quizning savollari ro'yxati",
+)
+async def list_quiz_questions(
+    quiz_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_owned_manual_quiz(db, quiz_id, current_user)
+    result = await db.execute(
+        select(Question)
+        .where(Question.category_id == quiz_id, Question.is_active.is_(True))
+        .order_by(Question.id)
+    )
+    return [_question_out(q) for q in result.scalars().all()]
+
+
+@router.post(
+    "/{quiz_id}/questions",
+    response_model=QuizQuestionOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Qo'lda yaratilgan quizga yangi savol qo'shish",
+)
+async def add_quiz_question(
+    quiz_id: int,
+    payload: ManualQuestionIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_owned_manual_quiz(db, quiz_id, current_user)
+
+    count_result = await db.execute(
+        select(func.count()).select_from(Question).where(
+            Question.category_id == quiz_id, Question.is_active.is_(True)
+        )
+    )
+    if count_result.scalar_one() >= MAX_QUESTION_COUNT:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Bitta quizda ko'pi bilan {MAX_QUESTION_COUNT} ta savol bo'lishi mumkin",
+        )
+
+    validated = _validate_questions([payload.model_dump()])
+    if not validated:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Savol to'g'ri to'ldirilmagan")
+
+    question = Question(category_id=quiz_id, is_active=True, **validated[0])
+    db.add(question)
+    await db.commit()
+    await db.refresh(question)
+    return _question_out(question)
+
+
+@router.patch(
+    "/{quiz_id}/questions/{question_id}",
+    response_model=QuizQuestionOut,
+    summary="Qo'lda yaratilgan quizdagi savolni tahrirlash",
+)
+async def update_quiz_question(
+    quiz_id: int,
+    question_id: int,
+    payload: ManualQuestionIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_owned_manual_quiz(db, quiz_id, current_user)
+
+    question = await db.get(Question, question_id)
+    if question is None or question.category_id != quiz_id or not question.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topilmadi")
+
+    validated = _validate_questions([payload.model_dump()])
+    if not validated:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Savol to'g'ri to'ldirilmagan")
+
+    question.question_text = validated[0]["question_text"]
+    question.options = validated[0]["options"]
+    question.correct_option_index = validated[0]["correct_option_index"]
+    await db.commit()
+    await db.refresh(question)
+    return _question_out(question)
+
+
+@router.delete(
+    "/{quiz_id}/questions/{question_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Qo'lda yaratilgan quizdagi savolni o'chirish",
+)
+async def delete_quiz_question(
+    quiz_id: int,
+    question_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_owned_manual_quiz(db, quiz_id, current_user)
+
+    question = await db.get(Question, question_id)
+    if question is None or question.category_id != quiz_id or not question.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Topilmadi")
+
+    count_result = await db.execute(
+        select(func.count()).select_from(Question).where(
+            Question.category_id == quiz_id, Question.is_active.is_(True)
+        )
+    )
+    if count_result.scalar_one() <= 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Quizda kamida bitta savol qolishi kerak")
+
+    question.is_active = False
+    await db.commit()
 
 
 @router.get("", response_model=list[AiQuizOut], summary="Mening AI quizlarim")
