@@ -74,6 +74,12 @@ class User(Base):
     last_daily_bonus_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_first_game_bonus_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Oxirgi marta "seriyangiz uzilishi mumkin" bildirishnomasi yuborilgan
+    # payt (Toshkent mahalliy kuni) - `app.services.streak_reminders`ning
+    # fon-vazifasi kuniga bir necha marta tekshiradi, shu ustun bir kunda
+    # bittadan ortiq yubormaslikni ta'minlaydi.
+    last_streak_reminder_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Har bir foydalanuvchining o'z taklif kodi (do'stlarni taklif qilish
     # uchun ulashadi) - ro'yxatdan o'tishda generatsiya qilinadi.
     referral_code: Mapped[str | None] = mapped_column(String(12), unique=True, nullable=True, index=True)

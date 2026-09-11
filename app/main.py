@@ -42,6 +42,7 @@ from app.routers import (
     users,
     wallet,
 )
+from app.services.streak_reminders import streak_reminder_loop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -70,9 +71,11 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     expiry_task = asyncio.create_task(duel_ws.expire_duel_invites_loop())
     notification_cleanup_task = asyncio.create_task(notifications.cleanup_old_notifications_loop())
+    streak_reminder_task = asyncio.create_task(streak_reminder_loop())
     yield
     expiry_task.cancel()
     notification_cleanup_task.cancel()
+    streak_reminder_task.cancel()
 
 
 app = FastAPI(
