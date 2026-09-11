@@ -41,3 +41,5 @@ class PlayerStatsOut(BaseModel):
     win_rate_percent: int
     total_wins: int
     best_rank_achieved: int
+    friends_count: int
+    public_quiz_count: int

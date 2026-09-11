@@ -9,7 +9,7 @@ from app.dependencies.auth import get_current_user
 from app.models.duel import DuelAnswer
 from app.models.friendship import Friendship
 from app.models.lobby_game import LobbyGame, LobbyGameResult
-from app.models.quiz import Answer, QuizSession, SessionQuestion
+from app.models.quiz import Answer, Category, QuizSession, SessionQuestion
 from app.models.user import User
 from app.models.xp_event import XpEvent
 from app.schemas.leaderboard import LeaderboardOut, PlayerStatsOut, RankEntryOut
@@ -201,6 +201,20 @@ async def get_player_stats(
     total_correct = solo_totals.correct + duel_totals.correct + lobby_totals.correct
     win_rate = round(total_correct / total_answered * 100) if total_answered else 0
 
+    # Profil sahifasida ko'rsatish uchun - ikkalasi ham istalgan
+    # foydalanuvchi (o'zi yoki boshqa) uchun ochiq ma'lumot: do'stlar soni
+    # va u ochiq (public) qilib qo'ygan quizlari soni.
+    friends_count = (
+        await db.execute(select(func.count()).select_from(Friendship).where(Friendship.user_id == user_id))
+    ).scalar_one()
+    public_quiz_count = (
+        await db.execute(
+            select(func.count()).select_from(Category).where(
+                Category.owner_user_id == user_id, Category.visibility == "public", Category.is_active.is_(True)
+            )
+        )
+    ).scalar_one()
+
     user = await db.get(User, user_id)
     level, level_title, next_level_xp, current_level_xp = compute_level(row.total_xp)
 
@@ -253,4 +267,6 @@ async def get_player_stats(
         win_rate_percent=win_rate,
         total_wins=user.total_wins,
         best_rank_achieved=user.best_rank_achieved,
+        friends_count=friends_count,
+        public_quiz_count=public_quiz_count,
     )
