@@ -69,6 +69,34 @@ async def _resolve_topic_category(db: AsyncSession, topic_category_id: int | Non
     return topic.name
 
 
+async def _has_duplicate_quiz_name(db: AsyncSession, owner_user_id: str, name: str) -> bool:
+    """Bitta foydalanuvchida bir xil nomdagi (katta-kichik harf va bosh-
+    oxiridagi bo'shliqlarga sezgir bo'lmagan) 2 ta quiz bo'lmasligi kerak -
+    boshqa foydalanuvchilarda xohlagancha bo'lishi mumkin, shuning uchun
+    tekshiruv faqat shu bitta `owner_user_id` doirasida."""
+    result = await db.execute(
+        select(Category.id).where(
+            Category.owner_user_id == owner_user_id,
+            Category.is_active.is_(True),
+            func.lower(Category.name) == name.strip().lower(),
+        )
+    )
+    return result.first() is not None
+
+
+async def _unique_quiz_name(db: AsyncSession, owner_user_id: str, base_name: str) -> str:
+    """AI-generatsiya uchun - narx ALLAQACHON (Diamond) to'langan bo'lgani
+    sababli, nom to'qnashuvi hech qachon generatsiyani rad etmaydi (foydalanuvchi
+    ataylab tanlagan nom emas, fayl nomi/mavzudan avtomatik olingan) - buning
+    o'rniga bo'sh nom topilguncha " (2)", " (3)" ... qo'shiladi."""
+    candidate = base_name[:50]
+    suffix = 2
+    while await _has_duplicate_quiz_name(db, owner_user_id, candidate) and suffix < 100:
+        candidate = f"{base_name[:44]} ({suffix})"
+        suffix += 1
+    return candidate
+
+
 async def _read_limited(upload: UploadFile, max_bytes: int) -> bytes:
     # Hajm chegarasini butun faylni o'qib bo'lgandan KEYIN emas, o'qish
     # jarayonida tekshiramiz (users.py'dagi avatar yuklash bilan bir xil
@@ -185,8 +213,9 @@ async def generate_ai_quiz(
         },
     )
 
+    unique_title = await _unique_quiz_name(db, current_user.id, title)
     category = Category(
-        name=title,
+        name=unique_title,
         icon_name="sparkle",
         color_key="coral",
         is_active=True,
@@ -283,8 +312,9 @@ async def _run_generation_job(
                     },
                 )
 
+            unique_title = await _unique_quiz_name(db, user_id, title)
             category = Category(
-                name=title,
+                name=unique_title,
                 icon_name="sparkle",
                 color_key="coral",
                 is_active=True,
@@ -314,7 +344,7 @@ async def _run_generation_job(
             await db.commit()
 
             await send_push_to_user(
-                db, user_id, "Quiz tayyor!", f"“{title}” testi tayyor bo'ldi - o'ynash uchun bosing"
+                db, user_id, "Quiz tayyor!", f"“{unique_title}” testi tayyor bo'ldi - o'ynash uchun bosing"
             )
         except QuizGenerationError as exc:
             job.status = "failed"
@@ -457,6 +487,15 @@ async def create_manual_quiz(
     name = payload.name.strip()[:50]
     if not name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Quiz nomini kiriting")
+    # Foydalanuvchi bu nomni ATAYLAB o'zi yozgan (AI'dan farqli, fayl
+    # nomi/mavzudan avtomatik olinmagan) - shuning uchun avtomatik
+    # o'zgartirish o'rniga aniq xato qaytariladi, boshqa nom tanlashni
+    # so'rab. Bitta foydalanuvchi doirasida - boshqa birov xohlagan
+    # nomdagi quiz yaratishi mumkin.
+    if await _has_duplicate_quiz_name(db, current_user.id, name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Bu nomda quizingiz allaqachon bor - boshqa nom tanlang"
+        )
 
     raw_questions = [q.model_dump() for q in payload.questions[:MAX_QUESTION_COUNT]]
     validated = _validate_questions(raw_questions)

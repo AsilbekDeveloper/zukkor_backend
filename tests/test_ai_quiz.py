@@ -386,6 +386,79 @@ async def test_create_manual_quiz_rejects_blank_name(db_session):
     assert exc_info.value.status_code == 400
 
 
+# --- one user can't have two quizzes with the same name ---
+
+
+@pytest.mark.anyio
+async def test_create_manual_quiz_rejects_a_duplicate_name(db_session):
+    user = await _create_user(db_session)
+    await create_manual_quiz(payload=_manual_payload("Flutter"), current_user=user, db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_manual_quiz(payload=_manual_payload("Flutter"), current_user=user, db=db_session)
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_create_manual_quiz_duplicate_check_ignores_case_and_whitespace(db_session):
+    user = await _create_user(db_session)
+    await create_manual_quiz(payload=_manual_payload("Flutter"), current_user=user, db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_manual_quiz(payload=_manual_payload("  flutter  "), current_user=user, db=db_session)
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_create_manual_quiz_allows_the_same_name_for_a_different_user(db_session):
+    owner = await _create_user(db_session, "dup_owner@example.com")
+    other = await _create_user(db_session, "dup_other@example.com")
+    await create_manual_quiz(payload=_manual_payload("Flutter"), current_user=owner, db=db_session)
+
+    result = await create_manual_quiz(payload=_manual_payload("Flutter"), current_user=other, db=db_session)
+    assert result.name == "Flutter"
+
+
+@pytest.mark.anyio
+async def test_create_manual_quiz_allows_a_deleted_quizs_name_to_be_reused(db_session):
+    user = await _create_user(db_session)
+    first = await create_manual_quiz(payload=_manual_payload("Flutter"), current_user=user, db=db_session)
+    await delete_ai_quiz(quiz_id=first.id, current_user=user, db=db_session)
+
+    result = await create_manual_quiz(payload=_manual_payload("Flutter"), current_user=user, db=db_session)
+    assert result.name == "Flutter"
+
+
+@pytest.mark.anyio
+async def test_generate_ai_quiz_auto_renames_on_a_duplicate_title(db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
+    user = await _create_user(db_session)
+
+    first = await generate_ai_quiz(
+        request=make_request(),
+        file=_upload("kitob.txt", b"matn"),
+        instruction="x",
+        topic=None,
+        question_count=2,
+        topic_category_id=None,
+        current_user=user,
+        db=db_session,
+    )
+    second = await generate_ai_quiz(
+        request=make_request(),
+        file=_upload("kitob.txt", b"boshqa matn"),
+        instruction="x",
+        topic=None,
+        question_count=2,
+        topic_category_id=None,
+        current_user=user,
+        db=db_session,
+    )
+
+    assert first.name == "kitob"
+    assert second.name == "kitob (2)"
+
+
 # --- visibility updates ---
 
 
@@ -679,8 +752,8 @@ async def test_update_quiz_question_changes_its_content(db_session):
 @pytest.mark.anyio
 async def test_update_quiz_question_rejects_a_question_from_another_quiz(db_session):
     user = await _create_user(db_session)
-    quiz_a = await create_manual_quiz(payload=_manual_payload(count=1), current_user=user, db=db_session)
-    quiz_b = await create_manual_quiz(payload=_manual_payload(count=1), current_user=user, db=db_session)
+    quiz_a = await create_manual_quiz(payload=_manual_payload("Quiz A", count=1), current_user=user, db=db_session)
+    quiz_b = await create_manual_quiz(payload=_manual_payload("Quiz B", count=1), current_user=user, db=db_session)
     [question_b] = await list_quiz_questions(quiz_id=quiz_b.id, current_user=user, db=db_session)
 
     with pytest.raises(HTTPException) as exc_info:
