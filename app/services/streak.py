@@ -29,4 +29,14 @@ def update_streak(user: User, played_at: datetime) -> None:
         # diff_days <= 0 (bugun allaqachon o'ynagan) - streak o'zgarmaydi
 
     user.longest_streak = max(user.longest_streak, user.current_streak)
-    user.last_played_at = played_at
+    # Never move `last_played_at` BACKWARD. Solo/Duel/Lobby each call this
+    # from their own DB transaction (Duel/Lobby use a background-task
+    # session, not the request-scoped one) - if the same user somehow
+    # finishes two games close together (two devices on one account, or a
+    # duel/lobby background task that started earlier but commits after a
+    # faster solo-quiz request), whichever transaction commits LAST would
+    # otherwise silently overwrite this with an EARLIER timestamp than what
+    # was already stored, which can shift the next day's `diff_days`
+    # calculation and break a streak that was never actually missed.
+    if user.last_played_at is None or played_at > user.last_played_at:
+        user.last_played_at = played_at
