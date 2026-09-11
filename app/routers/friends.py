@@ -163,7 +163,11 @@ async def send_friend_request(
 
     if target_user.friend_requests:
         await send_push_to_user(
-            db, to_user_id, "Yangi do'stlik so'rovi", f"{display_name(current_user)} sizga do'stlik so'rovi yubordi"
+            db,
+            to_user_id,
+            "Yangi do'stlik so'rovi",
+            f"{display_name(current_user)} sizga do'stlik so'rovi yubordi",
+            data={"type": "friend_request"},
         )
 
     response.status_code = status.HTTP_201_CREATED

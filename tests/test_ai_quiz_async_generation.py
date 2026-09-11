@@ -21,10 +21,10 @@ FAKE_QUESTIONS = [
 
 class _FakePushRecorder:
     def __init__(self):
-        self.calls: list[tuple[str, str, str]] = []
+        self.calls: list[tuple[str, str, str, dict | None]] = []
 
-    async def __call__(self, db, user_id, title, body):
-        self.calls.append((user_id, title, body))
+    async def __call__(self, db, user_id, title, body, data=None):
+        self.calls.append((user_id, title, body, data))
 
 
 @pytest.fixture
@@ -107,9 +107,10 @@ async def test_topic_job_starts_pending_then_completes(_isolated_session_maker, 
         assert len(questions) == 1
 
     assert _fake_push.calls
-    push_user_id, push_title, _ = _fake_push.calls[0]
+    push_user_id, push_title, _, push_data = _fake_push.calls[0]
     assert push_user_id == user.id
     assert push_title == "Quiz tayyor!"
+    assert push_data == {"type": "ai_quiz_ready", "quiz_id": str(category.id)}
 
 
 @pytest.mark.anyio
@@ -143,8 +144,9 @@ async def test_job_failure_is_recorded_and_pushed(_isolated_session_maker, _fake
         assert job.error_message == "AI xizmati hozircha sozlanmagan"
 
     assert _fake_push.calls
-    _, push_title, _ = _fake_push.calls[0]
+    _, push_title, _, push_data = _fake_push.calls[0]
     assert push_title == "Quiz yaratib bo'lmadi"
+    assert push_data == {"type": "ai_quiz_failed"}
 
 
 @pytest.mark.anyio

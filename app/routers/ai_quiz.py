@@ -344,14 +344,20 @@ async def _run_generation_job(
             await db.commit()
 
             await send_push_to_user(
-                db, user_id, "Quiz tayyor!", f"“{unique_title}” testi tayyor bo'ldi - o'ynash uchun bosing"
+                db,
+                user_id,
+                "Quiz tayyor!",
+                f"“{unique_title}” testi tayyor bo'ldi - o'ynash uchun bosing",
+                data={"type": "ai_quiz_ready", "quiz_id": str(category.id)},
             )
         except QuizGenerationError as exc:
             job.status = "failed"
             job.error_message = str(exc)[:300]
             job.finished_at = datetime.now(timezone.utc)
             await db.commit()
-            await send_push_to_user(db, user_id, "Quiz yaratib bo'lmadi", str(exc)[:150])
+            await send_push_to_user(
+                db, user_id, "Quiz yaratib bo'lmadi", str(exc)[:150], data={"type": "ai_quiz_failed"}
+            )
         except Exception:
             # Kutilmagan xato (masalan tarmoq uzilishi) - job'ni "failed"
             # deb belgilaymiz, aks holda foydalanuvchi "pending" holatida
@@ -361,7 +367,9 @@ async def _run_generation_job(
             job.error_message = "Kutilmagan xatolik yuz berdi"
             job.finished_at = datetime.now(timezone.utc)
             await db.commit()
-            await send_push_to_user(db, user_id, "Quiz yaratib bo'lmadi", "Kutilmagan xatolik yuz berdi")
+            await send_push_to_user(
+                db, user_id, "Quiz yaratib bo'lmadi", "Kutilmagan xatolik yuz berdi", data={"type": "ai_quiz_failed"}
+            )
 
 
 @router.post(

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -184,14 +185,36 @@ async def _handle_duel_invite(user: User, data: dict, websocket: WebSocket) -> N
         await db.refresh(invite)
         _record_invite_sent(user.id)
 
-        to_user = await db.get(User, to_user_id)
-        if to_user is not None and to_user.duel_invites:
-            await send_push_to_user(db, to_user_id, "Duel taklifi", f"{display_name(user)} sizni duelga chaqirdi")
-
         from_user_public = _user_public(user)
         category_summary = await _category_summary(db, category)
         expires_at_iso = invite.expires_at.isoformat()
         invite_id = invite.id
+
+        to_user = await db.get(User, to_user_id)
+        if to_user is not None and to_user.duel_invites:
+            # `invite` payload - bir xil shaklda ilova ochilganda ham
+            # (`duel_invite_received` WebSocket xabari), ham push bosilganda
+            # (ilova sovuq/fonda bo'lsa, socket hali ulanmagan bo'lishi
+            # mumkin) ishlatiladigan bir xil JSON - Flutter tomon
+            # `DuelInviteModel.fromJson` bilan to'g'ridan-to'g'ri o'qiydi,
+            # alohida REST so'rov shart emas.
+            await send_push_to_user(
+                db,
+                to_user_id,
+                "Duel taklifi",
+                f"{display_name(user)} sizni duelga chaqirdi",
+                data={
+                    "type": "duel_challenge",
+                    "invite": json.dumps(
+                        {
+                            "invite_id": invite_id,
+                            "from_user": from_user_public,
+                            "category": category_summary,
+                            "expires_at": expires_at_iso,
+                        }
+                    ),
+                },
+            )
 
     await websocket.send_json(
         {"type": "duel_invite_ack", "client_invite_id": client_invite_id, "invite_id": invite_id}

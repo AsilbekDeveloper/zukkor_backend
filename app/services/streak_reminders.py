@@ -84,6 +84,7 @@ async def send_due_streak_reminders(db: AsyncSession) -> int:
                 user.id,
                 "Seriyangiz xavf ostida!",
                 f"{user.current_streak} kunlik seriyangizni yo'qotmang — bugun o'ynang!",
+                data={"type": "streak_reminder"},
             )
             sent += 1
         except Exception:

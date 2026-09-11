@@ -12,7 +12,13 @@ from app.services.firebase import get_firebase_app
 logger = logging.getLogger("zukkor.push")
 
 
-async def send_push_to_user(db: AsyncSession, user_id: str, title: str, body: str) -> None:
+async def send_push_to_user(
+    db: AsyncSession, user_id: str, title: str, body: str, data: dict[str, str] | None = None
+) -> None:
+    """`data` - tap qilinganda ilova qaysi ekranga o'tishini aniqlaydigan
+    xom payload (kamida `{"type": "..."}"`) - Flutter tomon
+    `RemoteMessage.data`dan o'qiydi. FCM barcha qiymatlarni STRING deb
+    talab qiladi - chaqiruvchi buni ta'minlashi kerak."""
     app = get_firebase_app()
     if app is None:
         return
@@ -23,6 +29,7 @@ async def send_push_to_user(db: AsyncSession, user_id: str, title: str, body: st
 
     message = messaging.MulticastMessage(
         notification=messaging.Notification(title=title, body=body),
+        data=data,
         tokens=list(tokens),
     )
     try:
