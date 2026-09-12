@@ -47,6 +47,7 @@ from app.services import economy_config
 from app.services.streak_reminders import streak_reminder_loop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("zukkor.startup")
 
 Path("media/avatars").mkdir(parents=True, exist_ok=True)
 
@@ -65,6 +66,39 @@ if settings.SENTRY_DSN:
         traces_sample_rate=settings.SENTRY_TRACES_SAMPLE_RATE,
         send_default_pii=False,
     )
+
+
+def _warn_about_missing_production_config() -> None:
+    """Yuqoridagi har bir ixtiyoriy sozlama (Sentry/Gemini/R2/SMTP/
+    Telegram) bo'sh qoldirilsa ilova baribir ishga tushadi - ataylab
+    shunday qilingan (dev/deploy hech qachon shu sabab bilan to'xtamasin
+    deb). Lekin bu operatorga HECH QANDAY signal bermasdi: production'ga
+    shu holatda chiqarib qo'yib, masalan Sentry butunlay o'chiq
+    ekanligini payqamaslik mumkin edi (2026-09-13 prod-tayyorlik auditi
+    topilmasi). Bu faqat LOG yozadi - hech narsani to'xtatmaydi,
+    ADMIN_USERNAME/SECRET_KEY/DATABASE_URL kabi haqiqiy majburiy
+    sozlamalar allaqachon standart qiymatsiz, ya'ni ular yo'q bo'lsa
+    ilova bu yergacha yetib kelmaydi ham."""
+    if settings.ENVIRONMENT != "production":
+        return
+
+    missing: list[str] = []
+    if not settings.SENTRY_DSN:
+        missing.append("SENTRY_DSN (xatolik kuzatuvi o'chiq)")
+    if not settings.GEMINI_API_KEY:
+        missing.append("GEMINI_API_KEY (AI-quiz generatsiyasi ishlamaydi)")
+    if not (settings.R2_ACCOUNT_ID and settings.R2_ACCESS_KEY_ID and settings.R2_BUCKET):
+        missing.append("R2_* (avatar rasmlari doimiy saqlanmaydi, restart'da yo'qoladi)")
+    if not settings.SMTP_USERNAME:
+        missing.append("SMTP_USERNAME (parolni tiklash email'i yuborilmaydi)")
+    if not settings.TELEGRAM_BOT_TOKEN:
+        missing.append("TELEGRAM_BOT_TOKEN (Diamond sotib olish kanali ishlamaydi)")
+
+    if missing:
+        logger.warning("Production muhitida quyidagi sozlamalar bo'sh: %s", "; ".join(missing))
+
+
+_warn_about_missing_production_config()
 
 
 @asynccontextmanager

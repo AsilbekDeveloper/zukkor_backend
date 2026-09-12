@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -6,7 +8,7 @@ from app.core.security import hash_password
 from app.models.question_submission import QuestionSubmission
 from app.models.quiz import Category, Question
 from app.models.user import User
-from app.routers.question_submissions import submit_question
+from app.routers.question_submissions import MAX_APPROVED_SUBMISSIONS_PER_DAY, submit_question
 from app.schemas.ai_quiz import QuestionSubmissionRequest
 from app.services.question_moderation import ModerationResult, QuestionModerationError
 from conftest import make_request
@@ -280,3 +282,97 @@ async def test_rejects_when_no_active_global_categories_exist(db_session, monkey
             db=db_session,
         )
     assert exc_info.value.status_code == 503
+
+
+# --- Kunlik tasdiqlangan-savol chegarasi (2026-09-13 prod-tayyorlik auditi) ---
+
+
+async def _add_approved_submission(db, user_id: str, created_at: datetime) -> None:
+    db.add(
+        QuestionSubmission(
+            submitter_user_id=user_id,
+            question_text=f"Savol {created_at.isoformat()}",
+            options=_VALID_OPTIONS,
+            correct_option_index=0,
+            status="approved",
+            created_at=created_at,
+        )
+    )
+
+
+@pytest.mark.anyio
+async def test_rejects_submission_once_daily_approved_cap_is_reached(db_session, monkeypatch):
+    _never_called(monkeypatch)
+    category = await _create_global_category(db_session)
+    user = await _create_user(db_session)
+    now = datetime.now(timezone.utc)
+    for _ in range(MAX_APPROVED_SUBMISSIONS_PER_DAY):
+        await _add_approved_submission(db_session, user.id, now)
+    await db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await submit_question(
+            make_request(),
+            QuestionSubmissionRequest(
+                question_text="Yana bitta savol", options=_VALID_OPTIONS, correct_option_index=0, category_id=category.id
+            ),
+            current_user=user,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 429
+
+
+@pytest.mark.anyio
+async def test_daily_cap_ignores_other_users_and_rejected_submissions(db_session, monkeypatch):
+    category = await _create_global_category(db_session)
+    _approve(category.id, monkeypatch)
+    user = await _create_user(db_session, "capped@example.com")
+    other_user = await _create_user(db_session, "other@example.com")
+    now = datetime.now(timezone.utc)
+
+    # Boshqa userning tasdiqlangan savollari va shu userning RAD ETILGAN
+    # savollari - hech biri limitga qo'shilmasligi kerak.
+    for _ in range(MAX_APPROVED_SUBMISSIONS_PER_DAY):
+        await _add_approved_submission(db_session, other_user.id, now)
+    db_session.add(
+        QuestionSubmission(
+            submitter_user_id=user.id,
+            question_text="Rad etilgan savol",
+            options=_VALID_OPTIONS,
+            correct_option_index=0,
+            status="rejected",
+            created_at=now,
+        )
+    )
+    await db_session.commit()
+
+    result = await submit_question(
+        make_request(),
+        QuestionSubmissionRequest(
+            question_text="Yangi savol", options=_VALID_OPTIONS, correct_option_index=0, category_id=category.id
+        ),
+        current_user=user,
+        db=db_session,
+    )
+    assert result.approved is True
+
+
+@pytest.mark.anyio
+async def test_daily_cap_resets_after_the_tashkent_day_boundary(db_session, monkeypatch):
+    category = await _create_global_category(db_session)
+    _approve(category.id, monkeypatch)
+    user = await _create_user(db_session)
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1, hours=1)
+    for _ in range(MAX_APPROVED_SUBMISSIONS_PER_DAY):
+        await _add_approved_submission(db_session, user.id, yesterday)
+    await db_session.commit()
+
+    result = await submit_question(
+        make_request(),
+        QuestionSubmissionRequest(
+            question_text="Bugungi savol", options=_VALID_OPTIONS, correct_option_index=0, category_id=category.id
+        ),
+        current_user=user,
+        db=db_session,
+    )
+    assert result.approved is True

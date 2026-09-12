@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,8 +12,24 @@ from app.models.quiz import Category, Question
 from app.models.user import User
 from app.schemas.ai_quiz import QuestionSubmissionRequest, QuestionSubmissionResponse
 from app.services.question_moderation import QuestionModerationError, moderate_question
+from app.services.streak import TASHKENT_OFFSET
 
 router = APIRouter()
+
+# Bir kunda tasdiqlanadigan savollar soni chegarasi - bo'lmasa, bitta
+# foydalanuvchi ko'p sonli past-sifatli (lekin AI moderatsiyasidan
+# o'tadigan) savol qo'shib, keyin ularni (yolg'on/bir nechta akkaunt
+# orqali) o'ynatib `question_royalty` Coin'ini fermalashi mumkin edi
+# (2026-09-13 prod-tayyorlik auditi topilmasi). `/submit`ning o'zi
+# 5/minute bilan cheklangan, lekin bu FAQAT tezlikni, umumiy sonni
+# cheklamaydi.
+MAX_APPROVED_SUBMISSIONS_PER_DAY = 10
+
+
+def _tashkent_day_start_utc(now_utc: datetime) -> datetime:
+    local_now = now_utc + TASHKENT_OFFSET
+    local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return local_midnight - TASHKENT_OFFSET
 
 
 def _validate_submission_shape(data: QuestionSubmissionRequest) -> str | None:
@@ -41,6 +59,22 @@ async def submit_question(
     shape_error = _validate_submission_shape(data)
     if shape_error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=shape_error)
+
+    day_start = _tashkent_day_start_utc(datetime.now(timezone.utc))
+    approved_today_result = await db.execute(
+        select(func.count())
+        .select_from(QuestionSubmission)
+        .where(
+            QuestionSubmission.submitter_user_id == current_user.id,
+            QuestionSubmission.status == "approved",
+            QuestionSubmission.created_at >= day_start,
+        )
+    )
+    if approved_today_result.scalar_one() >= MAX_APPROVED_SUBMISSIONS_PER_DAY:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Kuniga ko'pi bilan {MAX_APPROVED_SUBMISSIONS_PER_DAY} ta savol qo'shish mumkin",
+        )
 
     question_text = data.question_text.strip()
     options = [option.strip() for option in data.options]
