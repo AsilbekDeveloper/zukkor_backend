@@ -16,6 +16,7 @@ from sqladmin import Admin
 
 from app.admin import (
     AdminAuth,
+    AppConfigAdmin,
     CategoryAdmin,
     CurrencyTransactionAdmin,
     QuestionAdmin,
@@ -23,7 +24,7 @@ from app.admin import (
     ReportedQuestionAdmin,
 )
 from app.core.config import settings
-from app.core.database import Base, engine
+from app.core.database import AsyncSessionLocal, Base, engine
 from app.core.limiter import limiter
 from app.routers import (
     ai_quiz,
@@ -42,6 +43,7 @@ from app.routers import (
     users,
     wallet,
 )
+from app.services import economy_config
 from app.services.streak_reminders import streak_reminder_loop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -69,6 +71,8 @@ if settings.SENTRY_DSN:
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    async with AsyncSessionLocal() as db:
+        await economy_config.seed_defaults(db)
     expiry_task = asyncio.create_task(duel_ws.expire_duel_invites_loop())
     notification_cleanup_task = asyncio.create_task(notifications.cleanup_old_notifications_loop())
     streak_reminder_task = asyncio.create_task(streak_reminder_loop())
@@ -148,6 +152,7 @@ admin.add_view(QuestionAdmin)
 admin.add_view(ReportedQuestionAdmin)
 admin.add_view(QuestionSubmissionAdmin)
 admin.add_view(CurrencyTransactionAdmin)
+admin.add_view(AppConfigAdmin)
 
 
 @app.get("/", tags=["Health"], summary="API holati")

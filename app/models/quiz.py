@@ -67,6 +67,16 @@ class Question(Base):
     correct_option_index: Mapped[int] = mapped_column(Integer)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # Kim qo'shgan (foydalanuvchi taklifi orqali tasdiqlangan savol uchun) -
+    # NULL bo'lsa rasmiy/admin savoli (yoki bu ustun qo'shilishidan oldingi
+    # eski qator). `app.services.wallet.charge_for_question_play` shu
+    # yordamida savol o'ynalganda sarflangan Coinning bir qismini
+    # muallifga to'laydi - o'z-o'ziga to'lov bo'lmasligi uchun chaqiruvchi
+    # tomonda `created_by_user_id == player.id` alohida tekshiriladi.
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
 
 class QuizSession(Base):
     __tablename__ = "quiz_sessions"

@@ -2,9 +2,13 @@
 [[ai_cost_architecture]] qarori asosida).
 
 Ikkita valyuta, hech qachon aralashmaydi:
-- Coin (yumshoq) - faqat ilova ichi faollik orqali topiladi, hozircha
-  sarflash mexanizmi yo'q (kosmetika/streak-himoya narxi hali
-  belgilanmagan - keyinroq qo'shiladi).
+- Coin (yumshoq) - faqat ilova ichi faollik orqali topiladi (sotib
+  olinmaydi). 2026-09-12'dan boshlab sarflash tomoni ham bor: har bir
+  o'ynalgan savol o'yinchidan bir necha Coin oladi, shundan bir qismi
+  savol muallifiga (foydalanuvchi taklif qilgan bo'lsa) to'lanadi -
+  `charge_for_question_play`ga qarang. Barcha miqdorlar (bonuslar,
+  savol narxi, muallif ulushi) `economy_config` orqali admin panelidan
+  o'zgartiriladi, qayta deploy shart emas.
 - Diamond (qattiq) - ro'yxatdan o'tganda bepul boshlang'ich miqdor
   beriladi, keyin faqat Payme/Click (Telegram bot orqali, keyinroq)
   sotib olinadi. FAQAT AI-generatsiya narxini to'lashga sarflanadi,
@@ -25,18 +29,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.currency_transaction import CurrencyTransaction
+from app.models.quiz import Question
 from app.models.user import User
+from app.services import economy_config
 from app.services.streak import TASHKENT_OFFSET, update_streak
 
 _REFERRAL_CODE_ALPHABET = string.ascii_uppercase + string.digits
 _REFERRAL_CODE_LENGTH = 8
-
-# Coin mukofotlari (2026-09-06 spec) - qat'iy: bular sotib olinmaydi, faqat
-# shu harakatlar orqali beriladi.
-DAILY_LOGIN_BONUS = 5
-FIRST_GAME_OF_DAY_BONUS = 5
-STREAK_BONUS_7D = 50
-REFERRAL_BONUS = 50
 
 
 class InsufficientBalanceError(Exception):
@@ -96,16 +95,27 @@ async def debit_diamond(db: AsyncSession, user: User, amount: int, reason: str, 
     await _record(db, user, currency="diamond", amount=-abs(amount), reason=reason, extra=extra)
 
 
+async def debit_coin(db: AsyncSession, user: User, amount: int, reason: str, extra: dict | None = None) -> None:
+    """Coin yechish - `debit_diamond` bilan bir xil naqsh. Chaqiruvchi
+    balans yetarliligini O'ZI tekshirishi kerak (masalan
+    `charge_for_question_play`dagidek) - bu funksiya hech qanday
+    tekshiruv qilmasdan balansni manfiyga ham tushirishi mumkin."""
+    await _record(db, user, currency="coin", amount=-abs(amount), reason=reason, extra=extra)
+
+
 def generate_referral_code() -> str:
     return "".join(secrets.choice(_REFERRAL_CODE_ALPHABET) for _ in range(_REFERRAL_CODE_LENGTH))
 
 
-def apply_signup_defaults(user: User) -> None:
+async def apply_signup_defaults(db: AsyncSession, user: User) -> None:
     """Yangi foydalanuvchi yaratilganda (register/google_auth) chaqiriladi -
-    boshlang'ich Diamond balansini va o'z taklif kodini beradi. `db` kerak
-    emas - faqat obyekt maydonlarini o'rnatadi, hech qanday ledger yozuvi
-    yaratmaydi (buning uchun pastdagi `signup_bonus_transaction`)."""
+    boshlang'ich Diamond va Coin balansini va o'z taklif kodini beradi.
+    Faqat obyekt maydonlarini o'rnatadi, hech qanday ledger yozuvi
+    yaratmaydi (buning uchun pastdagi `signup_bonus_transaction`/
+    `signup_coin_bonus_transaction`) - `db` faqat Coin miqdorini
+    `economy_config`dan o'qish uchun kerak."""
     user.diamond_balance = settings.DEFAULT_STARTING_DIAMONDS
+    user.coin_balance = await economy_config.get_int(db, economy_config.SIGNUP_COIN_BONUS)
     user.referral_code = generate_referral_code()
 
 
@@ -124,6 +134,18 @@ def signup_bonus_transaction(user: User) -> CurrencyTransaction:
     )
 
 
+def signup_coin_bonus_transaction(user: User) -> CurrencyTransaction:
+    """`signup_bonus_transaction`ning Coin varianti - xuddi shu chaqiruv
+    tartibi shartlariga bo'ysunadi (flush'dan keyin)."""
+    return CurrencyTransaction(
+        user_id=user.id,
+        currency="coin",
+        amount=user.coin_balance,
+        reason="signup_bonus",
+        balance_after=user.coin_balance,
+    )
+
+
 async def check_and_grant_daily_login_bonus(db: AsyncSession, user: User) -> None:
     """Har safar joriy foydalanuvchi profili o'qilganda (`GET /auth/me`)
     chaqiriladi - shu Toshkent-kunida hali berilmagan bo'lsa, kunlik
@@ -135,7 +157,8 @@ async def check_and_grant_daily_login_bonus(db: AsyncSession, user: User) -> Non
         return
 
     user.last_daily_bonus_at = datetime.now(timezone.utc)
-    await credit_coin(db, user, DAILY_LOGIN_BONUS, "daily_login")
+    bonus = await economy_config.get_int(db, economy_config.DAILY_LOGIN_BONUS)
+    await credit_coin(db, user, bonus, "daily_login")
 
 
 async def on_game_finished(
@@ -157,14 +180,16 @@ async def on_game_finished(
     today_local = _local_date(played_at)
     if user.last_first_game_bonus_at is None or _local_date(user.last_first_game_bonus_at) != today_local:
         user.last_first_game_bonus_at = played_at
-        await credit_coin(db, user, FIRST_GAME_OF_DAY_BONUS, "first_game")
+        bonus = await economy_config.get_int(db, economy_config.FIRST_GAME_OF_DAY_BONUS)
+        await credit_coin(db, user, bonus, "first_game")
 
     # 7 kunlik streak bonusi - faqat streak ENDI ko'paygan va aynan 7ga
     # bo'linadigan qiymatga yetganda (bir kunda bir necha marta o'ynash
     # qayta-qayta bonus bermaydi, chunki `update_streak` bir kunda
     # current_streak'ni faqat bir marta o'zgartiradi).
     if user.current_streak != old_streak and user.current_streak > 0 and user.current_streak % 7 == 0:
-        await credit_coin(db, user, STREAK_BONUS_7D, "streak_bonus_7d", extra={"streak": user.current_streak})
+        streak_bonus = await economy_config.get_int(db, economy_config.STREAK_BONUS_7D)
+        await credit_coin(db, user, streak_bonus, "streak_bonus_7d", extra={"streak": user.current_streak})
 
     # Referral bonusi - taklif qilingan do'stning ENG BIRINCHI o'yini
     # tugagach, taklif qilganga beriladi. Cheklovsiz (foydalanuvchining
@@ -172,7 +197,46 @@ async def on_game_finished(
     if is_first_game_ever and user.referred_by_user_id:
         referrer = await db.get(User, user.referred_by_user_id)
         if referrer is not None:
-            await credit_coin(db, referrer, REFERRAL_BONUS, "referral", extra={"referred_user_id": user.id})
+            referral_bonus = await economy_config.get_int(db, economy_config.REFERRAL_BONUS)
+            await credit_coin(db, referrer, referral_bonus, "referral", extra={"referred_user_id": user.id})
+
+
+async def charge_for_question_play(db: AsyncSession, player: User, question_id: int) -> None:
+    """Solo/Duel/Lobby'ning har UCHALASIDA ham, o'yinchi bitta savolga
+    javob bergan har safar chaqiriladi (2026-09-12 qaror - "gold coin
+    faqat ilova ichida ishlab topiladi", sarflash tomoni).
+
+    O'yinchidan bitta savol narxini yechadi; agar shu savol biror
+    foydalanuvchi tomonidan qo'shilgan bo'lsa (`Question.created_by_user_id`,
+    taklif qilib tasdiqlangan savollar), narxning bir qismini o'sha
+    muallifga to'laydi - o'zining o'z savoliga javob berishi hisobga
+    olinmaydi (aks holda cheksiz coin fermalash imkoni bo'lardi).
+
+    Balans yetarli bo'lmasa HECH NARSA qilinmaydi (na o'yinchidan
+    yechiladi, na muallifga to'lanadi) - o'yin hech qachon
+    bloklanmaydi va balans manfiyga tushmaydi, savol shunchaki
+    "bepul" o'tadi."""
+    cost = await economy_config.get_int(db, economy_config.COIN_COST_PER_QUESTION)
+    if cost <= 0 or player.coin_balance < cost:
+        return
+
+    await debit_coin(db, player, cost, "question_play", extra={"question_id": question_id})
+
+    question = await db.get(Question, question_id)
+    author_id = question.created_by_user_id if question is not None else None
+    if author_id is None or author_id == player.id:
+        return
+
+    author = await db.get(User, author_id)
+    if author is None:
+        return
+
+    share_percent = await economy_config.get_int(db, economy_config.QUESTION_AUTHOR_SHARE_PERCENT)
+    payout = (cost * share_percent) // 100
+    if payout > 0:
+        await credit_coin(
+            db, author, payout, "question_royalty", extra={"question_id": question_id, "payer_user_id": player.id}
+        )
 
 
 def diamond_cost_from_tokens(input_tokens: int, output_tokens: int) -> int:

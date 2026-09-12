@@ -167,6 +167,7 @@ async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_
             dq_objects.append(dq)
             questions_data.append(
                 {
+                    "question_id": question.id,
                     "question_text": question.question_text,
                     "shuffled_options": shuffled_options,
                     "correct_option": correct_option,
@@ -379,6 +380,9 @@ async def _handle_user_finished_question(state: _ActiveDuel, user_id: str, index
                 elapsed_ms=elapsed_ms,
             )
         )
+        player = await db.get(User, user_id)
+        if player is not None:
+            await wallet.charge_for_question_play(db, player, q["question_id"])
         await db.commit()
 
     await manager.send_to_user(

@@ -181,6 +181,9 @@ async def test_approves_and_creates_active_question_in_requested_category(db_ses
     assert created_question is not None
     assert created_question.is_active is True
     assert created_question.category_id == category.id
+    # 2026-09-12: Coin sarflash/muallif ulushi shu maydonga tayanadi -
+    # tasdiqlangan savol doim o'zini yuborgan userga bog'langan bo'lishi kerak.
+    assert created_question.created_by_user_id == user.id
 
     submission = (await db_session.execute(select(QuestionSubmission))).scalar_one()
     assert submission.status == "approved"

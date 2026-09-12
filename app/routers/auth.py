@@ -67,8 +67,8 @@ async def register(request: Request, data: RegisterRequest, db: AsyncSession = D
         email=data.email,
         hashed_password=hash_password(data.password),
     )
-    # Boshlang'ich bepul Diamond + o'z taklif kodi - [[ai_cost_architecture]].
-    wallet.apply_signup_defaults(user)
+    # Boshlang'ich bepul Diamond + Coin + o'z taklif kodi - [[ai_cost_architecture]].
+    await wallet.apply_signup_defaults(db, user)
     db.add(user)
 
     if data.referral_code:
@@ -93,6 +93,7 @@ async def register(request: Request, data: RegisterRequest, db: AsyncSession = D
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bu email allaqachon ro'yxatdan o'tgan")
 
     db.add(wallet.signup_bonus_transaction(user))
+    db.add(wallet.signup_coin_bonus_transaction(user))
 
     access_token = create_access_token({"sub": user.id})
     refresh_token_str = create_refresh_token({"sub": user.id})
@@ -177,7 +178,7 @@ async def google_auth(request: Request, data: GoogleAuthRequest, db: AsyncSessio
             user.google_id = google_id
         else:
             user = User(email=email, google_id=google_id, auth_provider="google")
-            wallet.apply_signup_defaults(user)
+            await wallet.apply_signup_defaults(db, user)
             db.add(user)
             if data.referral_code:
                 referrer_result = await db.execute(
@@ -190,6 +191,7 @@ async def google_auth(request: Request, data: GoogleAuthRequest, db: AsyncSessio
             # keyin qo'shiladi (register() bilan bir xil sabab).
             await db.flush()
             db.add(wallet.signup_bonus_transaction(user))
+            db.add(wallet.signup_coin_bonus_transaction(user))
 
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hisob faol emas")

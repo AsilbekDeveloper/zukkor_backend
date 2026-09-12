@@ -11,6 +11,7 @@ from sqladmin.authentication import AuthenticationBackend
 
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
+from app.models.app_config import AppConfig
 from app.models.currency_transaction import CurrencyTransaction
 from app.models.question_submission import QuestionSubmission
 from app.models.quiz import Category, Question
@@ -82,7 +83,7 @@ class QuestionAdmin(ModelView, model=Question):
     name_plural = "Savollar"
     icon = "fa-solid fa-circle-question"
 
-    column_list = [Question.id, Question.category, Question.question_text, Question.is_active]
+    column_list = [Question.id, Question.category, Question.question_text, Question.is_active, Question.created_by_user_id]
     column_searchable_list = [Question.question_text]
     column_sortable_list = [Question.id, Question.is_active]
     form_columns = [Question.category, Question.question_text, Question.is_active]
@@ -229,3 +230,23 @@ class CurrencyTransactionAdmin(ModelView, model=CurrencyTransaction):
 
         data["reason"] = "admin_adjustment"
         data["balance_after"] = balance_after
+
+
+class AppConfigAdmin(ModelView, model=AppConfig):
+    """Coin iqtisodiyoti parametrlari (`app.services.economy_config`) -
+    bu yerda qiymatni o'zgartirish darhol (qayta deploy'siz) kuchga
+    kiradi. Yangi qator qo'shib bo'lmaydi (`can_create = False`) - ilova
+    ishga tushganda kerakli kalitlarning barchasi avtomatik yaratiladi
+    (`economy_config.seed_defaults`), shuning uchun bu yerdan faqat
+    MAVJUD qatorning `value`sini tahrirlash kerak."""
+
+    name = "Iqtisodiyot sozlamasi"
+    name_plural = "Coin iqtisodiyoti sozlamalari"
+    icon = "fa-solid fa-sliders"
+
+    can_create = False
+    can_delete = False
+
+    column_list = [AppConfig.key, AppConfig.value, AppConfig.description]
+    form_columns = [AppConfig.value]
+    column_default_sort = [(AppConfig.key, False)]

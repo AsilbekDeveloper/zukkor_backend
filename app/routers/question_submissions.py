@@ -132,6 +132,7 @@ async def submit_question(
         options=options,
         correct_option_index=data.correct_option_index,
         is_active=True,
+        created_by_user_id=current_user.id,
     )
     db.add(new_question)
     await db.flush()  # new_question.id quyida kerak bo'ladi

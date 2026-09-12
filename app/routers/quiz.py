@@ -195,6 +195,7 @@ async def answer_question(
             answered_at=now,
         )
     )
+    await wallet.charge_for_question_play(db, current_user, question.id)
 
     if session_question.order < session_question.total:
         used_result = await db.execute(

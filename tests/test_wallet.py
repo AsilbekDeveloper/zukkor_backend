@@ -10,10 +10,16 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.security import hash_password
+from app.models.app_config import AppConfig
 from app.models.currency_transaction import CurrencyTransaction
+from app.models.quiz import Category, Question
 from app.models.user import User
 from app.routers.wallet import get_diamond_pricing
-from app.services import wallet
+from app.services import economy_config, wallet
+
+
+def _default(key: str) -> int:
+    return economy_config.DEFAULTS[key]
 
 
 async def _create_user(db, email: str, **kwargs) -> User:
@@ -66,11 +72,12 @@ async def test_diamond_pricing_endpoint_matches_settings():
 
 
 @pytest.mark.anyio
-async def test_apply_signup_defaults_grants_starting_diamonds_and_a_referral_code(db_session):
+async def test_apply_signup_defaults_grants_starting_diamonds_coins_and_a_referral_code(db_session):
     user = await _create_user(db_session, "a@example.com")
-    wallet.apply_signup_defaults(user)
+    await wallet.apply_signup_defaults(db_session, user)
 
     assert user.diamond_balance == settings.DEFAULT_STARTING_DIAMONDS
+    assert user.coin_balance == _default(economy_config.SIGNUP_COIN_BONUS)
     assert user.referral_code is not None
     assert len(user.referral_code) == wallet._REFERRAL_CODE_LENGTH
 
@@ -78,19 +85,34 @@ async def test_apply_signup_defaults_grants_starting_diamonds_and_a_referral_cod
 @pytest.mark.anyio
 async def test_signup_bonus_transaction_records_the_starting_grant(db_session):
     user = await _create_user(db_session, "a@example.com")
-    wallet.apply_signup_defaults(user)
+    await wallet.apply_signup_defaults(db_session, user)
     db_session.add(user)
     await db_session.flush()
     db_session.add(wallet.signup_bonus_transaction(user))
+    db_session.add(wallet.signup_coin_bonus_transaction(user))
     await db_session.commit()
 
-    tx = (
-        await db_session.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))
+    diamond_tx = (
+        await db_session.execute(
+            select(CurrencyTransaction).where(
+                CurrencyTransaction.user_id == user.id, CurrencyTransaction.currency == "diamond"
+            )
+        )
     ).scalar_one()
-    assert tx.currency == "diamond"
-    assert tx.amount == settings.DEFAULT_STARTING_DIAMONDS
-    assert tx.reason == "signup_bonus"
-    assert tx.balance_after == settings.DEFAULT_STARTING_DIAMONDS
+    assert diamond_tx.amount == settings.DEFAULT_STARTING_DIAMONDS
+    assert diamond_tx.reason == "signup_bonus"
+    assert diamond_tx.balance_after == settings.DEFAULT_STARTING_DIAMONDS
+
+    coin_tx = (
+        await db_session.execute(
+            select(CurrencyTransaction).where(
+                CurrencyTransaction.user_id == user.id, CurrencyTransaction.currency == "coin"
+            )
+        )
+    ).scalar_one()
+    assert coin_tx.amount == _default(economy_config.SIGNUP_COIN_BONUS)
+    assert coin_tx.reason == "signup_bonus"
+    assert coin_tx.balance_after == _default(economy_config.SIGNUP_COIN_BONUS)
 
 
 # --- Kunlik kirish bonusi ---
@@ -103,12 +125,12 @@ async def test_daily_login_bonus_granted_once(db_session):
 
     await wallet.check_and_grant_daily_login_bonus(db_session, user)
     await db_session.commit()
-    assert user.coin_balance == wallet.DAILY_LOGIN_BONUS
+    assert user.coin_balance == _default(economy_config.DAILY_LOGIN_BONUS)
 
     # Xuddi shu (Toshkent) kunida yana chaqirilsa - qayta berilmaydi.
     await wallet.check_and_grant_daily_login_bonus(db_session, user)
     await db_session.commit()
-    assert user.coin_balance == wallet.DAILY_LOGIN_BONUS
+    assert user.coin_balance == _default(economy_config.DAILY_LOGIN_BONUS)
 
 
 @pytest.mark.anyio
@@ -121,7 +143,7 @@ async def test_daily_login_bonus_granted_again_on_a_new_day(db_session):
     await wallet.check_and_grant_daily_login_bonus(db_session, user)
     await db_session.commit()
 
-    assert user.coin_balance == wallet.DAILY_LOGIN_BONUS
+    assert user.coin_balance == _default(economy_config.DAILY_LOGIN_BONUS)
 
 
 # --- O'yin tugashi: birinchi-o'yin bonusi, 7-kunlik streak, referral ---
@@ -135,12 +157,12 @@ async def test_first_game_of_day_bonus_granted_once_per_day(db_session):
 
     await wallet.on_game_finished(db_session, user, now, is_first_game_ever=False)
     await db_session.commit()
-    assert user.coin_balance == wallet.FIRST_GAME_OF_DAY_BONUS
+    assert user.coin_balance == _default(economy_config.FIRST_GAME_OF_DAY_BONUS)
 
     # Bugun ikkinchi o'yin - bonus qaytadan berilmaydi.
     await wallet.on_game_finished(db_session, user, now + timedelta(minutes=5), is_first_game_ever=False)
     await db_session.commit()
-    assert user.coin_balance == wallet.FIRST_GAME_OF_DAY_BONUS
+    assert user.coin_balance == _default(economy_config.FIRST_GAME_OF_DAY_BONUS)
 
 
 @pytest.mark.anyio
@@ -154,7 +176,7 @@ async def test_streak_bonus_granted_exactly_at_multiples_of_7(db_session):
 
     assert user.current_streak == 7
     # Kunning birinchi o'yini (5) + 7 kunlik streak bonusi (50).
-    assert user.coin_balance == wallet.FIRST_GAME_OF_DAY_BONUS + wallet.STREAK_BONUS_7D
+    assert user.coin_balance == _default(economy_config.FIRST_GAME_OF_DAY_BONUS) + _default(economy_config.STREAK_BONUS_7D)
 
 
 @pytest.mark.anyio
@@ -167,7 +189,7 @@ async def test_streak_bonus_not_granted_at_non_multiples_of_7(db_session):
     await db_session.commit()
 
     assert user.current_streak == 4
-    assert user.coin_balance == wallet.FIRST_GAME_OF_DAY_BONUS  # streak bonusisiz
+    assert user.coin_balance == _default(economy_config.FIRST_GAME_OF_DAY_BONUS)  # streak bonusisiz
 
 
 @pytest.mark.anyio
@@ -182,7 +204,7 @@ async def test_referral_bonus_paid_to_referrer_on_friends_first_game(db_session)
     await wallet.on_game_finished(db_session, friend, datetime.now(timezone.utc), is_first_game_ever=True)
     await db_session.commit()
 
-    assert referrer.coin_balance == wallet.REFERRAL_BONUS
+    assert referrer.coin_balance == _default(economy_config.REFERRAL_BONUS)
 
 
 @pytest.mark.anyio
@@ -198,3 +220,135 @@ async def test_referral_bonus_not_paid_on_second_game(db_session):
     await db_session.commit()
 
     assert referrer.coin_balance == 0
+
+
+# --- Savol o'ynash narxi + muallif ulushi (2026-09-12) ---
+
+
+async def _create_category(db, **kwargs) -> Category:
+    category = Category(name="Test", icon_name="star", color_key="coral", **kwargs)
+    db.add(category)
+    await db.flush()
+    return category
+
+
+async def _create_question(db, category_id: int, **kwargs) -> Question:
+    question = Question(
+        category_id=category_id,
+        question_text="2+2?",
+        options=["3", "4", "5", "6"],
+        correct_option_index=1,
+        **kwargs,
+    )
+    db.add(question)
+    await db.flush()
+    return question
+
+
+@pytest.mark.anyio
+async def test_debit_coin_subtracts_and_records_a_negative_ledger_entry(db_session):
+    user = await _create_user(db_session, "a@example.com", coin_balance=10)
+    await db_session.commit()
+
+    await wallet.debit_coin(db_session, user, 3, "test_debit")
+    await db_session.commit()
+
+    assert user.coin_balance == 7
+    tx = (
+        await db_session.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))
+    ).scalar_one()
+    assert tx.amount == -3
+    assert tx.balance_after == 7
+
+
+@pytest.mark.anyio
+async def test_charge_for_question_play_pays_a_share_to_the_questions_author(db_session):
+    player = await _create_user(db_session, "player@example.com", coin_balance=10)
+    author = await _create_user(db_session, "author@example.com")
+    category = await _create_category(db_session)
+    question = await _create_question(db_session, category.id, created_by_user_id=author.id)
+    await db_session.commit()
+
+    await wallet.charge_for_question_play(db_session, player, question.id)
+    await db_session.commit()
+
+    cost = _default(economy_config.COIN_COST_PER_QUESTION)
+    share_percent = _default(economy_config.QUESTION_AUTHOR_SHARE_PERCENT)
+    assert player.coin_balance == 10 - cost
+    assert author.coin_balance == (cost * share_percent) // 100
+
+
+@pytest.mark.anyio
+async def test_charge_for_question_play_pays_nobody_for_an_official_question(db_session):
+    player = await _create_user(db_session, "player2@example.com", coin_balance=10)
+    category = await _create_category(db_session)
+    question = await _create_question(db_session, category.id)  # created_by_user_id=None
+    await db_session.commit()
+
+    await wallet.charge_for_question_play(db_session, player, question.id)
+    await db_session.commit()
+
+    cost = _default(economy_config.COIN_COST_PER_QUESTION)
+    assert player.coin_balance == 10 - cost
+    all_tx = (
+        await db_session.execute(select(CurrencyTransaction).where(CurrencyTransaction.reason == "question_royalty"))
+    ).scalars().all()
+    assert all_tx == []
+
+
+@pytest.mark.anyio
+async def test_charge_for_question_play_does_not_pay_the_author_for_their_own_play(db_session):
+    author = await _create_user(db_session, "author2@example.com", coin_balance=10)
+    category = await _create_category(db_session)
+    question = await _create_question(db_session, category.id, created_by_user_id=author.id)
+    await db_session.commit()
+
+    await wallet.charge_for_question_play(db_session, author, question.id)
+    await db_session.commit()
+
+    cost = _default(economy_config.COIN_COST_PER_QUESTION)
+    # Faqat o'zidan yechildi - o'ziga muallif ulushi qo'shilmadi.
+    assert author.coin_balance == 10 - cost
+
+
+@pytest.mark.anyio
+async def test_charge_for_question_play_charges_nothing_when_balance_is_insufficient(db_session):
+    player = await _create_user(db_session, "poor@example.com", coin_balance=0)
+    author = await _create_user(db_session, "author3@example.com")
+    category = await _create_category(db_session)
+    question = await _create_question(db_session, category.id, created_by_user_id=author.id)
+    await db_session.commit()
+
+    await wallet.charge_for_question_play(db_session, player, question.id)
+    await db_session.commit()
+
+    assert player.coin_balance == 0
+    assert author.coin_balance == 0
+
+
+@pytest.mark.anyio
+async def test_economy_config_get_int_falls_back_to_default_when_unset(db_session):
+    value = await economy_config.get_int(db_session, economy_config.COIN_COST_PER_QUESTION)
+    assert value == economy_config.DEFAULTS[economy_config.COIN_COST_PER_QUESTION]
+
+
+@pytest.mark.anyio
+async def test_economy_config_get_int_uses_admin_overridden_value(db_session):
+    db_session.add(AppConfig(key=economy_config.COIN_COST_PER_QUESTION, value="7"))
+    await db_session.commit()
+
+    value = await economy_config.get_int(db_session, economy_config.COIN_COST_PER_QUESTION)
+    assert value == 7
+
+
+@pytest.mark.anyio
+async def test_seed_defaults_fills_missing_keys_without_overwriting_existing(db_session):
+    db_session.add(AppConfig(key=economy_config.COIN_COST_PER_QUESTION, value="99"))
+    await db_session.commit()
+
+    await economy_config.seed_defaults(db_session)
+
+    overridden = await economy_config.get_int(db_session, economy_config.COIN_COST_PER_QUESTION)
+    assert overridden == 99  # admin qiymati saqlanib qoladi
+    seeded = await economy_config.get_int(db_session, economy_config.DAILY_LOGIN_BONUS)
+    assert seeded == economy_config.DEFAULTS[economy_config.DAILY_LOGIN_BONUS]

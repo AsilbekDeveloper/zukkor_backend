@@ -483,6 +483,14 @@ async def _handle_participant_finished_question(
         }
     )
 
+    user_id = game.participant_user_ids.get(participant_id)
+    if user_id is not None:
+        async with AsyncSessionLocal() as db:
+            player = await db.get(User, user_id)
+            if player is not None:
+                await wallet.charge_for_question_play(db, player, q["question_id"])
+                await db.commit()
+
     participant = room.participants.get(participant_id)
     if participant is not None:
         await _safe_send(
