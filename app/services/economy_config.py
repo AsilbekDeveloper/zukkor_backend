@@ -35,6 +35,13 @@ DEFAULTS: dict[str, int] = {
     QUESTION_AUTHOR_SHARE_PERCENT: 70,
 }
 
+# Foizni ifodalaydigan kalitlar - 0 dan 100 gacha bo'lishi shart. Aks
+# holda (masalan 150% yoki -20%) `wallet.charge_for_question_play`dagi
+# `payout = (cost * share_percent) // 100` yechilgan narxdan KO'PROQ
+# to'lab yuborishi (>100) yoki savol muallifidan pul YECHIB olishi
+# (<0, chunki `credit_coin`ga manfiy son berilgan bo'lardi) mumkin edi.
+_PERCENT_KEYS: frozenset[str] = frozenset({QUESTION_AUTHOR_SHARE_PERCENT})
+
 _DESCRIPTIONS: dict[str, str] = {
     DAILY_LOGIN_BONUS: "Har kuni ilovaga birinchi kirganda beriladigan Coin",
     FIRST_GAME_OF_DAY_BONUS: "Kunning birinchi o'yinini tugatgandagi bonus Coin",
@@ -44,6 +51,30 @@ _DESCRIPTIONS: dict[str, str] = {
     COIN_COST_PER_QUESTION: "Bitta savolga javob berish o'yinchiga necha Coin turadi",
     QUESTION_AUTHOR_SHARE_PERCENT: "Savol muallifiga tegadigan ulush (foizda, 0-100)",
 }
+
+
+def validate_value(key: str, raw_value: str) -> int:
+    """Admin panel (`app.admin.AppConfigAdmin.on_model_change`) yangi
+    qiymatni saqlashdan OLDIN chaqiradi - 2026-09-13 prod-tayyorlik
+    auditi: bu tekshiruv bo'lmaganda, admin panelidagi oddiy matn
+    maydoniga noto'g'ri son (manfiy, yoki foiz uchun 100dan katta)
+    kiritilsa hech qanday xatolik ko'rsatilmasdan saqlanardi va
+    iqtisodiyot hisob-kitoblarini (`wallet.charge_for_question_play`)
+    buzardi. Muvaffaqiyatli bo'lsa tekshirilgan butun sonni qaytaradi,
+    aks holda adminga ko'rsatiladigan aniq xabar bilan `ValueError`
+    ko'taradi (forma xatosi sifatida chiqadi, saqlanmaydi)."""
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        raise ValueError(f"'{raw_value}' butun son emas")
+
+    if value < 0:
+        raise ValueError("Manfiy qiymat kiritib bo'lmaydi")
+
+    if key in _PERCENT_KEYS and value > 100:
+        raise ValueError("Foiz 100 dan katta bo'lishi mumkin emas")
+
+    return value
 
 
 async def get_int(db: AsyncSession, key: str) -> int:

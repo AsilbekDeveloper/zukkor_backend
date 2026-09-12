@@ -246,6 +246,38 @@ async def _create_question(db, category_id: int, **kwargs) -> Question:
 
 
 @pytest.mark.anyio
+async def test_record_with_require_sufficient_rejects_and_writes_nothing_when_balance_too_low(db_session):
+    # 2026-09-13 prod-tayyorlik auditi: balans yetarliligi endi bitta
+    # atomik SQL so'rovda tekshiriladi (`WHERE balance + amount >= 0`),
+    # oldingi kabi alohida Python `if` emas - bu poyga holatini yopadi.
+    # Bu test faqat mantiqni tekshiradi (haqiqiy parallel so'rovlarni
+    # emas - db_session fixture'i bitta ulanish, SQLite esa Postgres'dagi
+    # kabi qator darajasidagi qulflashni haqiqiy aks ettirmaydi).
+    user = await _create_user(db_session, "broke@example.com", coin_balance=2)
+    await db_session.commit()
+
+    with pytest.raises(wallet.InsufficientBalanceError):
+        await wallet._record(
+            db_session, user, currency="coin", amount=-5, reason="test_debit", require_sufficient=True
+        )
+
+    assert user.coin_balance == 2
+    all_tx = (await db_session.execute(select(CurrencyTransaction))).scalars().all()
+    assert all_tx == []
+
+
+@pytest.mark.anyio
+async def test_record_with_require_sufficient_succeeds_at_exactly_zero_remaining(db_session):
+    user = await _create_user(db_session, "exact@example.com", coin_balance=5)
+    await db_session.commit()
+
+    await wallet._record(db_session, user, currency="coin", amount=-5, reason="test_debit", require_sufficient=True)
+    await db_session.commit()
+
+    assert user.coin_balance == 0
+
+
+@pytest.mark.anyio
 async def test_debit_coin_subtracts_and_records_a_negative_ledger_entry(db_session):
     user = await _create_user(db_session, "a@example.com", coin_balance=10)
     await db_session.commit()
@@ -352,3 +384,38 @@ async def test_seed_defaults_fills_missing_keys_without_overwriting_existing(db_
     assert overridden == 99  # admin qiymati saqlanib qoladi
     seeded = await economy_config.get_int(db_session, economy_config.DAILY_LOGIN_BONUS)
     assert seeded == economy_config.DEFAULTS[economy_config.DAILY_LOGIN_BONUS]
+
+
+# --- Admin panel validatsiyasi (2026-09-13 prod-tayyorlik auditi) ---
+
+
+def test_validate_value_accepts_a_valid_non_negative_integer():
+    assert economy_config.validate_value(economy_config.DAILY_LOGIN_BONUS, "10") == 10
+    assert economy_config.validate_value(economy_config.DAILY_LOGIN_BONUS, "0") == 0
+
+
+def test_validate_value_rejects_a_non_numeric_string():
+    with pytest.raises(ValueError):
+        economy_config.validate_value(economy_config.DAILY_LOGIN_BONUS, "abc")
+
+
+def test_validate_value_rejects_negative_numbers_for_any_key():
+    with pytest.raises(ValueError):
+        economy_config.validate_value(economy_config.DAILY_LOGIN_BONUS, "-5")
+    with pytest.raises(ValueError):
+        economy_config.validate_value(economy_config.QUESTION_AUTHOR_SHARE_PERCENT, "-1")
+
+
+def test_validate_value_rejects_percent_keys_above_100():
+    with pytest.raises(ValueError):
+        economy_config.validate_value(economy_config.QUESTION_AUTHOR_SHARE_PERCENT, "150")
+
+
+def test_validate_value_allows_percent_key_at_exactly_100():
+    assert economy_config.validate_value(economy_config.QUESTION_AUTHOR_SHARE_PERCENT, "100") == 100
+
+
+def test_validate_value_allows_non_percent_keys_above_100():
+    # Faqat foiz turidagi kalitlar 100 bilan chegaralangan - bonus/narx
+    # kabi kalitlar istalgan katta musbat songa ega bo'lishi mumkin.
+    assert economy_config.validate_value(economy_config.STREAK_BONUS_7D, "500") == 500

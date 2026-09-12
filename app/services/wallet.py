@@ -25,6 +25,7 @@ import secrets
 import string
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -56,18 +57,54 @@ async def _record(
     amount: int,
     reason: str,
     extra: dict | None = None,
+    require_sufficient: bool = False,
 ) -> None:
-    """Balansni o'zgartiradi va ledger yozuvini qo'shadi. Chaqiruvchi
-    `db.commit()`ni o'zi qiladi (bir nechta `_record` chaqiruvi bitta
-    tranzaksiyada birlashishi mumkin, masalan duel'da ikkala o'yinchi)."""
+    """Balansni ATOMIK ravishda o'zgartiradi (bitta SQL
+    `UPDATE ... SET balance = balance + :amount ... RETURNING balance`,
+    Python darajasida "avval o'qib, keyin yozish" EMAS) va ledger
+    yozuvini qo'shadi. Chaqiruvchi `db.commit()`ni o'zi qiladi (bir
+    nechta `_record` chaqiruvi bitta tranzaksiyada birlashishi mumkin,
+    masalan duel'da ikkala o'yinchi).
+
+    Atomiklik muhim: eski (`user.coin_balance += amount`) yondashuvda
+    bir xil foydalanuvchi uchun ikkita parallel so'rov (masalan bir
+    vaqtda 2 ta qurilmadan o'ynash, yoki concurrent AI-generatsiya
+    so'rovlari) balansni "yo'qolgan yangilanish" (lost update) bilan
+    buzardi - ikkinchisi birinchisining natijasini bekor qilib qo'yardi,
+    sabab: ikkalasi ham eskirgan qiymatni o'qib, o'shanga qo'shib
+    yozardi. Bitta SQL UPDATE esa DB darajasida qatorni avtomatik
+    qulflaydi - bu poyga fizik jihatdan mumkin emas (2026-09-13,
+    prod-tayyorlik auditi topilmasi).
+
+    `require_sufficient=True` bo'lsa, yechish (`amount` manfiy) natijasi
+    balansni manfiyga tushirsa, HECH NARSA yozilmaydi (na balans, na
+    ledger) va `InsufficientBalanceError` ko'tariladi - bu tekshiruv ham
+    xuddi shu bitta SQL so'rovda (`WHERE balance + amount >= 0`) amalga
+    oshadi, shuning uchun oldindan Python'da `if user.balance < cost`
+    tekshirish bilan solishtirganda poyga holati yo'q."""
     if currency == "coin":
-        user.coin_balance += amount
-        balance_after = user.coin_balance
+        column = User.coin_balance
     elif currency == "diamond":
-        user.diamond_balance += amount
-        balance_after = user.diamond_balance
+        column = User.diamond_balance
     else:
         raise ValueError(f"Noma'lum valyuta: {currency}")
+
+    stmt = sql_update(User).where(User.id == user.id).values(**{f"{currency}_balance": column + amount})
+    if require_sufficient:
+        stmt = stmt.where(column + amount >= 0)
+    stmt = stmt.returning(column)
+
+    result = await db.execute(stmt)
+    row = result.first()
+    if row is None:
+        raise InsufficientBalanceError(f"user={user.id} currency={currency} amount={amount}")
+
+    balance_after = row[0]
+    # ORM obyektini yangi qiymat bilan sinxronlaymiz - shu funksiyadan
+    # KEYIN kod (masalan `charge_for_question_play`ning o'zi) darhol
+    # `user.coin_balance`ni o'qisa, eskirgan emas, aynan hozir yozilgan
+    # qiymatni ko'rsin.
+    setattr(user, f"{currency}_balance", balance_after)
 
     db.add(
         CurrencyTransaction(
@@ -91,15 +128,22 @@ async def credit_diamond(db: AsyncSession, user: User, amount: int, reason: str,
 
 async def debit_diamond(db: AsyncSession, user: User, amount: int, reason: str, extra: dict | None = None) -> None:
     """Diamond yechish - `credit_diamond(-amount, ...)` bilan bir xil,
-    lekin chaqiruvchi tomonda ishorani unutmaslik uchun alohida nom."""
+    lekin chaqiruvchi tomonda ishorani unutmaslik uchun alohida nom.
+    `require_sufficient=False` (standart) - `ai_quiz.py` buni generatsiya
+    MUVAFFAQIYATLI tugagandan keyin chaqiradi, shu bosqichda endi
+    "yetarli emas" desak ham Gemini xarajati allaqachon qilingan bo'ladi,
+    shuning uchun bu yerda balans manfiyga tushishi mumkin (kamdan-kam,
+    faqat haqiqiy poyga holatida) - buni butunlay man qilish alohida
+    mahsulot qarorini talab qiladi (masalan generatsiyani bekor qilish)."""
     await _record(db, user, currency="diamond", amount=-abs(amount), reason=reason, extra=extra)
 
 
 async def debit_coin(db: AsyncSession, user: User, amount: int, reason: str, extra: dict | None = None) -> None:
-    """Coin yechish - `debit_diamond` bilan bir xil naqsh. Chaqiruvchi
-    balans yetarliligini O'ZI tekshirishi kerak (masalan
-    `charge_for_question_play`dagidek) - bu funksiya hech qanday
-    tekshiruv qilmasdan balansni manfiyga ham tushirishi mumkin."""
+    """Coin yechish - `debit_diamond` bilan bir xil naqsh, balans
+    yetarli bo'lmasa ham manfiyga tushiradi. Balans HECH QACHON
+    manfiyga tushmasligi kerak bo'lgan chaqiruvchilar (masalan
+    `charge_for_question_play`) buning o'rniga `_record`ni
+    `require_sufficient=True` bilan to'g'ridan-to'g'ri chaqiradi."""
     await _record(db, user, currency="coin", amount=-abs(amount), reason=reason, extra=extra)
 
 
@@ -215,12 +259,24 @@ async def charge_for_question_play(db: AsyncSession, player: User, question_id: 
     Balans yetarli bo'lmasa HECH NARSA qilinmaydi (na o'yinchidan
     yechiladi, na muallifga to'lanadi) - o'yin hech qachon
     bloklanmaydi va balans manfiyga tushmaydi, savol shunchaki
-    "bepul" o'tadi."""
+    "bepul" o'tadi. Bu tekshiruv ATOMIK (`_record`ning
+    `require_sufficient=True`si) - ikkita parallel savol-javob (masalan
+    Lobby'da bir necha ishtirokchi, yoki bitta user 2 ta qurilmadan)
+    balansni bir vaqtda yechishga urinsa ham, DB darajasidagi qulf
+    tufayli ikkalasi ham "yetarli" deb noto'g'ri o'tib keta olmaydi
+    (avvalgi Python darajasidagi `player.coin_balance < cost` tekshiruvi
+    poyga holatiga ochiq edi - 2026-09-13 audit topilmasi)."""
     cost = await economy_config.get_int(db, economy_config.COIN_COST_PER_QUESTION)
-    if cost <= 0 or player.coin_balance < cost:
+    if cost <= 0:
         return
 
-    await debit_coin(db, player, cost, "question_play", extra={"question_id": question_id})
+    try:
+        await _record(
+            db, player, currency="coin", amount=-cost, reason="question_play",
+            extra={"question_id": question_id}, require_sufficient=True,
+        )
+    except InsufficientBalanceError:
+        return
 
     question = await db.get(Question, question_id)
     author_id = question.created_by_user_id if question is not None else None

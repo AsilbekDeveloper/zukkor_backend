@@ -2,6 +2,8 @@ import hmac
 import time
 from collections import defaultdict
 
+from starlette.middleware import Middleware
+from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
 from wtforms import SelectField, StringField
 from wtforms.validators import DataRequired
@@ -17,6 +19,7 @@ from app.models.question_submission import QuestionSubmission
 from app.models.quiz import Category, Question
 from app.models.reported_question import ReportedQuestion
 from app.models.user import User
+from app.services import economy_config
 
 _OPTION_FIELD_NAMES = ["option_1", "option_2", "option_3", "option_4"]
 
@@ -37,6 +40,19 @@ def _is_locked_out(ip: str) -> bool:
 
 
 class AdminAuth(AuthenticationBackend):
+    def __init__(self, secret_key: str) -> None:
+        super().__init__(secret_key)
+        # SQLAdmin'ning standart sozlamasi sessiya cookie'siga `Secure`
+        # belgisini QO'YMAYDI (`https_only=False`) - bu Starlette'ning
+        # o'zida ham xavfsiz standart emas. Bu belgi faqat brauzerga
+        # "bu cookie'ni faqat HTTPS ustida yubor" deydi, so'rovning ichki
+        # sxemasini tekshirmaydi - shuning uchun Railway'ning proksi
+        # sozlamasidan qat'i nazar xavfsiz (2026-09-13 prod-tayyorlik
+        # auditi topilmasi).
+        self.middlewares = [
+            Middleware(SessionMiddleware, secret_key=secret_key, https_only=True),
+        ]
+
     async def login(self, request: Request) -> bool:
         client_ip = request.client.host if request.client else "unknown"
         if _is_locked_out(client_ip):
@@ -250,3 +266,10 @@ class AppConfigAdmin(ModelView, model=AppConfig):
     column_list = [AppConfig.key, AppConfig.value, AppConfig.description]
     form_columns = [AppConfig.value]
     column_default_sort = [(AppConfig.key, False)]
+
+    async def on_model_change(self, data: dict, model, is_created: bool, request: Request) -> None:
+        # Xato kiritilgan qiymat (manfiy son, yoki foiz uchun 100dan
+        # katta) forma xatosi sifatida qaytariladi, saqlanmaydi - aks
+        # holda `wallet.charge_for_question_play`dagi hisob-kitob
+        # (masalan muallif ulushi) buzilib qolardi.
+        economy_config.validate_value(model.key, data.get("value", ""))
