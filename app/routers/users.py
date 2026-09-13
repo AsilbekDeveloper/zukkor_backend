@@ -58,7 +58,7 @@ async def check_username_available(
     "/me/profile",
     response_model=UserResponse,
     summary="Onboarding — profilni to'ldirish",
-    description="3-bosqichli onboarding wizard yakunida chaqiriladi: username, ism/familiya, avatar rangi, yo'nalish saqlanadi.",
+    description="2-bosqichli onboarding wizard yakunida chaqiriladi: username, ism/familiya, avatar rangi saqlanadi.",
 )
 async def setup_profile(
     data: ProfileSetupRequest,
@@ -82,16 +82,7 @@ async def setup_profile(
         old_avatar_url = current_user.avatar_image_path
         current_user.avatar_color = data.avatar_color
         current_user.avatar_image_path = None
-    current_user.direction = data.direction
     current_user.onboarding_completed = True
-
-    # Introduction so'rovnomasi - ixtiyoriy, faqat so'rovda kelgan bo'lsa yoziladi (kelmasa mavjud qiymat saqlanadi)
-    if data.interests is not None:
-        current_user.interests = data.interests
-    if data.study_place is not None:
-        current_user.study_place = data.study_place
-    if data.quiz_liking is not None:
-        current_user.quiz_liking = data.quiz_liking
 
     try:
         await db.commit()

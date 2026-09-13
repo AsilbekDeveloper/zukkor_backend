@@ -102,16 +102,8 @@ class UserResponse(BaseModel):
     last_name: str | None
     avatar_color: str | None
     avatar_image_path: str | None
-    direction: str | None
     onboarding_completed: bool
     auth_provider: str
-
-    # Introduction so'rovnomasi javoblari - onboarding'da yig'ilib
-    # `PATCH /users/me/profile`ga yozilgan, lekin shu paytgacha hech qanday
-    # javobda qaytarilmagan edi (Profile/Edit Profile'da umuman ko'rinmasdi).
-    interests: list[str] | None
-    study_place: str | None
-    quiz_liking: str | None
 
     # Coin/Diamond iqtisodiyoti - [[ai_cost_architecture]]. Bu yerda
     # (leaderboard/stats emas) - hisob darajasidagi holat, har safar Home
@@ -137,12 +129,8 @@ class UserResponse(BaseModel):
             last_name=user.last_name,
             avatar_color=user.avatar_color,
             avatar_image_path=user.avatar_image_path,
-            direction=user.direction,
             onboarding_completed=user.onboarding_completed,
             auth_provider=user.auth_provider,
-            interests=user.interests,
-            study_place=user.study_place,
-            quiz_liking=user.quiz_liking,
             coin_balance=user.coin_balance,
             diamond_balance=user.diamond_balance,
             referral_code=user.referral_code,

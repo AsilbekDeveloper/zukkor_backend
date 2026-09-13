@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, JSON, String, func
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -20,7 +20,6 @@ class User(Base):
     last_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
     avatar_image_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
     avatar_color: Mapped[str | None] = mapped_column(String(20), nullable=True, default="a-coral")
-    direction: Mapped[str | None] = mapped_column(String(20), nullable=True)
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False)
 
     auth_provider: Mapped[str] = mapped_column(String(10), default="email")
@@ -54,10 +53,6 @@ class User(Base):
     # ichida, statistikani har safar hisoblashda - alohida fon-jarayon
     # kerak emas).
     best_rank_achieved: Mapped[int | None] = mapped_column(Integer, nullable=True)
-
-    interests: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    study_place: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    quiz_liking: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
     # --- Coin/Diamond iqtisodiyoti (2026-09-06) - [[ai_cost_architecture]] ---
     # Coin - yumshoq valyuta, faqat ilova ichi faollik orqali topiladi
