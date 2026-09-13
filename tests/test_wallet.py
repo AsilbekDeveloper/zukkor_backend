@@ -293,6 +293,48 @@ async def test_debit_coin_subtracts_and_records_a_negative_ledger_entry(db_sessi
     assert tx.balance_after == 7
 
 
+# --- apply_atomic_balance_delta (admin panel, 2026-09-13 prod-tayyorlik auditi) ---
+
+
+@pytest.mark.anyio
+async def test_apply_atomic_balance_delta_changes_balance_and_returns_new_value(db_session):
+    user = await _create_user(db_session, "a@example.com", coin_balance=10)
+    await db_session.commit()
+
+    balance_after = await wallet.apply_atomic_balance_delta(db_session, user, currency="coin", amount=5)
+    await db_session.commit()
+
+    assert balance_after == 15
+    assert user.coin_balance == 15
+
+
+@pytest.mark.anyio
+async def test_apply_atomic_balance_delta_creates_no_ledger_row(db_session):
+    # `CurrencyTransactionAdmin`ning o'zi (SQLAdmin orqali) o'z ledger
+    # qatorini yaratadi - agar bu funksiya HAM qator qo'shsa, bitta admin
+    # amali uchun ikkita yozuv paydo bo'lardi.
+    user = await _create_user(db_session, "a@example.com", diamond_balance=100)
+    await db_session.commit()
+
+    await wallet.apply_atomic_balance_delta(db_session, user, currency="diamond", amount=-30)
+    await db_session.commit()
+
+    assert user.diamond_balance == 70
+    rows = (
+        await db_session.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))
+    ).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.anyio
+async def test_apply_atomic_balance_delta_rejects_unknown_currency(db_session):
+    user = await _create_user(db_session, "a@example.com", coin_balance=10)
+    await db_session.commit()
+
+    with pytest.raises(ValueError):
+        await wallet.apply_atomic_balance_delta(db_session, user, currency="gold", amount=5)
+
+
 @pytest.mark.anyio
 async def test_charge_for_question_play_pays_a_share_to_the_questions_author(db_session):
     player = await _create_user(db_session, "player@example.com", coin_balance=10)

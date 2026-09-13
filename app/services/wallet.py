@@ -49,22 +49,20 @@ def _local_date(dt: datetime) -> object:
     return (dt + TASHKENT_OFFSET).date()
 
 
-async def _record(
+async def apply_atomic_balance_delta(
     db: AsyncSession,
     user: User,
     *,
     currency: str,
     amount: int,
-    reason: str,
-    extra: dict | None = None,
     require_sufficient: bool = False,
-) -> None:
+) -> int:
     """Balansni ATOMIK ravishda o'zgartiradi (bitta SQL
     `UPDATE ... SET balance = balance + :amount ... RETURNING balance`,
-    Python darajasida "avval o'qib, keyin yozish" EMAS) va ledger
-    yozuvini qo'shadi. Chaqiruvchi `db.commit()`ni o'zi qiladi (bir
-    nechta `_record` chaqiruvi bitta tranzaksiyada birlashishi mumkin,
-    masalan duel'da ikkala o'yinchi).
+    Python darajasida "avval o'qib, keyin yozish" EMAS) va yangi
+    qiymatni qaytaradi - HECH QANDAY `CurrencyTransaction` yozmaydi (buni
+    chaqiruvchi o'zi qiladi - pastdagi `_record`, yoki `app.admin`dagi
+    kabi ledger qatorini boshqa yo'l bilan yaratadigan chaqiruvchi).
 
     Atomiklik muhim: eski (`user.coin_balance += amount`) yondashuvda
     bir xil foydalanuvchi uchun ikkita parallel so'rov (masalan bir
@@ -74,14 +72,16 @@ async def _record(
     sabab: ikkalasi ham eskirgan qiymatni o'qib, o'shanga qo'shib
     yozardi. Bitta SQL UPDATE esa DB darajasida qatorni avtomatik
     qulflaydi - bu poyga fizik jihatdan mumkin emas (2026-09-13,
-    prod-tayyorlik auditi topilmasi).
+    prod-tayyorlik auditi topilmasi - `app/admin.py`dagi
+    `CurrencyTransactionAdmin` ham xuddi shu eski usulda edi, endi shu
+    funksiyaga o'tkazildi).
 
     `require_sufficient=True` bo'lsa, yechish (`amount` manfiy) natijasi
-    balansni manfiyga tushirsa, HECH NARSA yozilmaydi (na balans, na
-    ledger) va `InsufficientBalanceError` ko'tariladi - bu tekshiruv ham
-    xuddi shu bitta SQL so'rovda (`WHERE balance + amount >= 0`) amalga
-    oshadi, shuning uchun oldindan Python'da `if user.balance < cost`
-    tekshirish bilan solishtirganda poyga holati yo'q."""
+    balansni manfiyga tushirsa, HECH NARSA yozilmaydi va
+    `InsufficientBalanceError` ko'tariladi - bu tekshiruv ham xuddi shu
+    bitta SQL so'rovda (`WHERE balance + amount >= 0`) amalga oshadi,
+    shuning uchun oldindan Python'da `if user.balance < cost` tekshirish
+    bilan solishtirganda poyga holati yo'q."""
     if currency == "coin":
         column = User.coin_balance
     elif currency == "diamond":
@@ -105,7 +105,26 @@ async def _record(
     # `user.coin_balance`ni o'qisa, eskirgan emas, aynan hozir yozilgan
     # qiymatni ko'rsin.
     setattr(user, f"{currency}_balance", balance_after)
+    return balance_after
 
+
+async def _record(
+    db: AsyncSession,
+    user: User,
+    *,
+    currency: str,
+    amount: int,
+    reason: str,
+    extra: dict | None = None,
+    require_sufficient: bool = False,
+) -> None:
+    """`apply_atomic_balance_delta` + shu o'zgarish uchun ledger yozuvi.
+    Chaqiruvchi `db.commit()`ni o'zi qiladi (bir nechta `_record`
+    chaqiruvi bitta tranzaksiyada birlashishi mumkin, masalan duel'da
+    ikkala o'yinchi)."""
+    balance_after = await apply_atomic_balance_delta(
+        db, user, currency=currency, amount=amount, require_sufficient=require_sufficient
+    )
     db.add(
         CurrencyTransaction(
             user_id=user.id,

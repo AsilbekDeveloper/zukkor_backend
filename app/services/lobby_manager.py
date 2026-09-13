@@ -533,14 +533,23 @@ async def _finish_game(room: _Room) -> None:
     participant_count = len(game.participant_user_ids)
 
     def _breakdown_for(pid: str) -> list[dict]:
+        # `range(game.total_questions)` emas - agar boshqa ishtirokchilar
+        # ketib qolgani sababli o'yin muddatidan oldin tugatilsa (pastga
+        # qarang, `_remove_participant_from_game`), qolgan yagona
+        # o'yinchi hali BARCHA savollarga ulgurmagan bo'lishi mumkin, va
+        # `answers_log[pid]` faqat u haqiqatan javob bergan savollarni
+        # o'z ichiga oladi - to'liq sondan iteratsiya qilish
+        # `IndexError` bilan butun o'yinni (va DB commit'ini) qulatib
+        # qo'yardi (2026-09-13 real-qurilma sinovi oldidan topilgan xato).
+        log = game.answers_log[pid]
         return [
             {
                 "order": i,
                 "question_id": game.questions[i]["question_id"],
                 "question_text": game.questions[i]["question_text"],
-                "is_correct": game.answers_log[pid][i]["is_correct"],
+                "is_correct": log[i]["is_correct"],
             }
-            for i in range(game.total_questions)
+            for i in range(len(log))
         ]
 
     async with AsyncSessionLocal() as db:

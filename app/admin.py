@@ -19,7 +19,7 @@ from app.models.question_submission import QuestionSubmission
 from app.models.quiz import Category, Question
 from app.models.reported_question import ReportedQuestion
 from app.models.user import User
-from app.services import economy_config
+from app.services import economy_config, wallet
 
 _OPTION_FIELD_NAMES = ["option_1", "option_2", "option_3", "option_4"]
 
@@ -234,14 +234,15 @@ class CurrencyTransactionAdmin(ModelView, model=CurrencyTransaction):
             user = await db.get(User, user_id)
             if user is None:
                 raise ValueError(f"Foydalanuvchi topilmadi: {user_id}")
-            if currency == "coin":
-                user.coin_balance += amount
-                balance_after = user.coin_balance
-            elif currency == "diamond":
-                user.diamond_balance += amount
-                balance_after = user.diamond_balance
-            else:
-                raise ValueError(f"Noma'lum valyuta: {currency}")
+            # `user.coin_balance += amount` EMAS - bu yerda ham xuddi
+            # `wallet.py`dagi kabi atomik SQL UPDATE ishlatiladi, aks
+            # holda admin tuzatishi va shu paytda tugagan o'yin (ikkalasi
+            # ham balansni o'zgartiradi) bir-birining natijasini
+            # "yo'qolgan yangilanish" bilan bekor qilib qo'yishi mumkin
+            # edi (2026-09-13, prod-tayyorlik auditi topilmasi - avval
+            # faqat `wallet.py`ning o'zi tuzatilgan, bu yerga qaramay
+            # qolgan edi).
+            balance_after = await wallet.apply_atomic_balance_delta(db, user, currency=currency, amount=amount)
             await db.commit()
 
         data["reason"] = "admin_adjustment"
