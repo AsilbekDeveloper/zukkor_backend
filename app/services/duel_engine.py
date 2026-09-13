@@ -28,6 +28,11 @@ PRE_GAME_COUNTDOWN_SECONDS = 5
 # pauza (900ms) bilan bir xil - uch rejimda ham izchil, imkon qadar tez
 # (2026-08-26, foydalanuvchi so'rovi bilan 1.5s'dan tushirildi).
 REVEAL_PAUSE_SECONDS = 0.9
+# Aloqa uzilganda darhol taslim bo'ldi deb hisoblash o'rniga (2026-09-13,
+# foydalanuvchi so'rovi bilan) - odatiy mobil tarmoq uzilishlari (lift,
+# metro, ilova fonga o'tishi) uchun yetarli, lekin raqibni ortiqcha
+# kutdirmaydigan darajada qisqa.
+DISCONNECT_GRACE_SECONDS = 15
 
 
 class _ActiveDuel:
@@ -55,6 +60,13 @@ class _ActiveDuel:
         # javobni ushlab qolish uchun.
         self.user_pending_advance: set[str] = set()
         self.user_timeout_task: dict[str, asyncio.Task] = {}
+
+        # Aloqasi uzilgan (lekin hali taslim bo'lmagan) foydalanuvchi -
+        # `handle_disconnect` bu yerga DISCONNECT_GRACE_SECONDS soniyadan
+        # keyin `forfeit_duel`ni chaqiradigan vazifani qo'yadi;
+        # `handle_reconnect` shu muddat ichida qaytib ulansa uni bekor
+        # qiladi va o'chiradi. Bo'sh bo'lsa - hech kim uzilmagan.
+        self.disconnect_grace_task: dict[str, asyncio.Task] = {}
 
         self.lock = asyncio.Lock()
         # Ikkala o'yinchi ham barcha savollarini tugatgach True bo'ladi -
@@ -280,12 +292,92 @@ async def submit_answer(user_id: str, duel_id: str, question_index, selected_opt
     await _process_user_answer(state, user_id, question_index, selected_option)
 
 
+async def handle_disconnect(user_id: str, duel_id: str) -> None:
+    """WebSocket kutilmaganda uzilganda (`duel_ws.py`ning `finally` bloki)
+    chaqiriladi - AVVAL bu holatda darhol `forfeit_duel` chaqirilib,
+    bir soniyalik uzilish ham butun duelni bekor qilardi (2026-09-13,
+    foydalanuvchi so'rovi bilan o'zgartirildi). Endi
+    `DISCONNECT_GRACE_SECONDS` beriladi - shu muddat ichida
+    `handle_reconnect` chaqirilsa (foydalanuvchi qaytib ulansa), duel
+    xuddi hech narsa bo'lmagandek davom etadi; aks holda muddat
+    tugagach `forfeit_duel` odatdagidek ishlaydi."""
+    state = _active_duels.get(duel_id)
+    if state is None or user_id not in (state.user_a_id, state.user_b_id):
+        return
+
+    async with state.lock:
+        if state.finished:
+            return
+        if user_id in state.disconnect_grace_task:
+            return  # allaqachon kutilmoqda
+
+        # Uzilgan foydalanuvchining joriy savol taymeri to'xtatiladi - u
+        # baribir javob berolmaydi, shuning uchun bu vaqt unga qarshi
+        # ishlamasligi kerak. Qaytib ulanganda `handle_reconnect` unga
+        # TO'LIQ yangi vaqt bilan savolni qayta yuboradi.
+        task = state.user_timeout_task.pop(user_id, None)
+        if task is not None:
+            task.cancel()
+
+        state.disconnect_grace_task[user_id] = asyncio.create_task(_disconnect_grace_expired(state, user_id))
+
+    other_id = _other_user_id(state, user_id)
+    await manager.send_to_user(
+        other_id,
+        {"type": "duel_opponent_disconnected", "duel_id": duel_id, "grace_seconds": DISCONNECT_GRACE_SECONDS},
+    )
+
+
+async def _disconnect_grace_expired(state: _ActiveDuel, user_id: str) -> None:
+    try:
+        await asyncio.sleep(DISCONNECT_GRACE_SECONDS)
+    except asyncio.CancelledError:
+        return  # handle_reconnect bekor qildi
+    async with state.lock:
+        if state.finished:
+            return
+        state.disconnect_grace_task.pop(user_id, None)
+    await forfeit_duel(user_id, state.duel_id)
+
+
+async def handle_reconnect(user_id: str) -> None:
+    """Har bir WebSocket ulanish muvaffaqiyatli autentifikatsiyadan
+    o'tgach chaqiriladi (`duel_ws.py`) - agar shu foydalanuvchi biror
+    faol duelda "aloqasi uzilgan" holatda kutib turgan bo'lsa
+    (`handle_disconnect`), taslim bo'lish vazifasini bekor qiladi va
+    duelni davom ettiradi (joriy savolni to'liq yangi vaqt bilan qayta
+    yuboradi)."""
+    duel_id = _user_active_duel.get(user_id)
+    if duel_id is None:
+        return
+    state = _active_duels.get(duel_id)
+    if state is None:
+        return
+
+    async with state.lock:
+        task = state.disconnect_grace_task.pop(user_id, None)
+        if task is None:
+            return  # aloqasi uzilmagan edi
+        task.cancel()
+
+    other_id = _other_user_id(state, user_id)
+    await manager.send_to_user(other_id, {"type": "duel_opponent_reconnected", "duel_id": duel_id})
+
+    async with state.lock:
+        if state.finished:
+            return
+        if not state.user_finished.get(user_id, False):
+            current_index = state.user_index.get(user_id, -1)
+            if current_index >= 0:
+                await _send_question_to_user(state, user_id, current_index)
+
+
 async def forfeit_duel(leaving_user_id: str, duel_id: str) -> None:
     """A player left mid-duel - explicitly (client sends `duel_leave` after
-    its own confirm dialog) or by disconnecting outright (network drop,
-    app killed - the websocket's own `finally` block calls this the same
-    way). The whole match is voided for BOTH sides - no ball/XP for
-    either (per the user's own call: a departure shouldn't hand the
+    its own confirm dialog), or their `DISCONNECT_GRACE_SECONDS`
+    reconnect window (see `handle_disconnect`) expired without them
+    coming back. The whole match is voided for BOTH sides - no ball/XP
+    for either (per the user's own call: a departure shouldn't hand the
     remaining player a free forfeit-win) - the opponent is notified, and
     the duel is torn down immediately instead of being left to hang
     forever waiting on a side that's gone.
@@ -301,6 +393,11 @@ async def forfeit_duel(leaving_user_id: str, duel_id: str) -> None:
         for task in list(state.user_timeout_task.values()):
             task.cancel()
         state.user_timeout_task.clear()
+        # Ikkala tomon ham (masalan bir vaqtda) uzilgan bo'lishi mumkin -
+        # boshqasining kutish vazifasi ham endi keraksiz.
+        for task in list(state.disconnect_grace_task.values()):
+            task.cancel()
+        state.disconnect_grace_task.clear()
 
     other_user_id = _other_user_id(state, leaving_user_id)
 

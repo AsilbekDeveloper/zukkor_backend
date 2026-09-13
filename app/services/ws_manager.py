@@ -23,6 +23,15 @@ class ConnectionManager:
         if not conns:
             del self.active[user_id]
 
+    def has_connection(self, user_id: str) -> bool:
+        """A user can briefly hold two sockets at once (a new connection
+        opening slightly before the stale old one's disconnect is
+        detected) - callers that decide whether to treat a disconnect as
+        a REAL departure (e.g. duel_engine.handle_disconnect) should
+        check this AFTER `disconnect()` rather than assuming "one socket
+        closed" means "the user is gone"."""
+        return bool(self.active.get(user_id))
+
     async def send_to_user(self, user_id: str, message: dict) -> bool:
         conns = self.active.get(user_id)
         if not conns:

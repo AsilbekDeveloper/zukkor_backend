@@ -314,6 +314,10 @@ async def duel_ws(websocket: WebSocket):
 
     try:
         await _deliver_pending_invites(user.id)
+        # If this user was mid-duel and disconnected within the grace
+        # window (see duel_engine.handle_disconnect), this cancels their
+        # pending forfeit and resumes the duel instead of voiding it.
+        await duel_engine.handle_reconnect(user.id)
 
         while True:
             data = await websocket.receive_json()
@@ -344,10 +348,19 @@ async def duel_ws(websocket: WebSocket):
         pass
     finally:
         manager.disconnect(user.id, websocket)
-        # An abrupt disconnect (network drop, app killed) mid-duel must be
-        # treated the same as an explicit `duel_leave` - otherwise the
-        # opponent is left waiting forever on a side that's gone, with no
-        # notification and no way for the duel to ever resolve.
+        # An abrupt disconnect (network drop, app killed) mid-duel gets a
+        # DISCONNECT_GRACE_SECONDS reconnect window (handle_disconnect)
+        # rather than an immediate forfeit - a brief mobile network blip
+        # (elevator, tunnel) shouldn't instantly void the whole match for
+        # both sides. If the window expires without a reconnect, forfeit
+        # still happens (see duel_engine._disconnect_grace_expired) so the
+        # opponent is never left waiting forever on a side that's gone.
+        #
+        # `has_connection` guard: a reconnect can open its NEW socket
+        # slightly before this (the OLD, now-dead one's) disconnect is
+        # detected - without this check that race would start a needless
+        # grace period (and opponent notification) for a user who never
+        # actually left.
         active_duel_id = duel_engine.get_active_duel_id(user.id)
-        if active_duel_id is not None:
-            await duel_engine.forfeit_duel(user.id, active_duel_id)
+        if active_duel_id is not None and not manager.has_connection(user.id):
+            await duel_engine.handle_disconnect(user.id, active_duel_id)
