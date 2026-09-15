@@ -17,7 +17,7 @@ _VALID_OPTIONS = ["3", "4", "5", "6"]
 
 
 async def _create_user(db, email="submitter@example.com") -> User:
-    user = User(email=email, hashed_password=hash_password("Parol1234"))
+    user = User(email=email, hashed_password=await hash_password("Parol1234"))
     db.add(user)
     await db.flush()
     return user

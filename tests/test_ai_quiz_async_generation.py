@@ -53,7 +53,7 @@ def _fake_push(monkeypatch):
 
 
 async def _create_user(db, email="user@example.com") -> User:
-    user = User(email=email, hashed_password=hash_password("Parol1234"), diamond_balance=100_000)
+    user = User(email=email, hashed_password=await hash_password("Parol1234"), diamond_balance=100_000)
     db.add(user)
     await db.flush()
     return user

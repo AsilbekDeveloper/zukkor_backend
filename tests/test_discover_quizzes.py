@@ -8,7 +8,7 @@ from app.routers.ai_quiz import discover_quizzes, search_discover_quizzes
 
 
 async def _create_user(db, email: str, username: str | None = None) -> User:
-    user = User(email=email, hashed_password=hash_password("Parol1234"), username=username)
+    user = User(email=email, hashed_password=await hash_password("Parol1234"), username=username)
     db.add(user)
     await db.flush()
     return user

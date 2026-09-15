@@ -28,6 +28,12 @@ router = APIRouter()
 _MAX_INVITES_PER_MINUTE = 2
 _INVITE_WINDOW_SECONDS = 60.0
 _DECLINE_COOLDOWN_SECONDS = 5 * 60.0
+# `cleanup_stale_rate_limit_entries_loop`ning har necha soniyada bir
+# ishlashi - ikkala dict ham hech qachon o'zi kichraymaydi (har bir yangi
+# foydalanuvchi/juftlik doimiy kalit qo'shadi), shuning uchun uzoq
+# muddat ishlaydigan serverda sekin-asta o'sib boraveradi
+# (2026-09-16, unumdorlik auditi).
+_RATE_LIMIT_CLEANUP_INTERVAL_SECONDS = 600.0
 
 _invite_timestamps: dict[str, list[float]] = defaultdict(list)
 _decline_cooldown_until: dict[tuple[str, str], float] = {}
@@ -298,6 +304,44 @@ async def expire_duel_invites_loop() -> None:
                 message = {"type": "duel_invite_expired", "invite_id": invite_id}
                 await manager.send_to_user(from_user_id, message)
                 await manager.send_to_user(to_user_id, message)
+        except Exception:
+            pass  # bitta xato butun tsiklni to'xtatmasin
+
+
+def _cleanup_stale_rate_limit_entries() -> None:
+    """`cleanup_stale_rate_limit_entries_loop`ning bir martalik ishi -
+    alohida funksiya sifatida ajratilgan, testlar `asyncio.sleep`ni
+    kutmasdan to'g'ridan-to'g'ri chaqira olishi uchun."""
+    now = time.monotonic()
+
+    invite_cutoff = now - _INVITE_WINDOW_SECONDS
+    stale_invite_keys = [
+        user_id
+        for user_id, timestamps in _invite_timestamps.items()
+        if not any(t > invite_cutoff for t in timestamps)
+    ]
+    for user_id in stale_invite_keys:
+        del _invite_timestamps[user_id]
+
+    expired_cooldown_keys = [pair for pair, until in _decline_cooldown_until.items() if until <= now]
+    for pair in expired_cooldown_keys:
+        del _decline_cooldown_until[pair]
+
+
+async def cleanup_stale_rate_limit_entries_loop() -> None:
+    """Fon rejimida — har `_RATE_LIMIT_CLEANUP_INTERVAL_SECONDS` soniyada
+    `_invite_timestamps`/`_decline_cooldown_until`dagi endi kerak
+    bo'lmagan yozuvlarni o'chiradi. Ikkalasi ham module-darajasidagi
+    dict - `_is_invite_rate_limited`/`_is_in_decline_cooldown` faqat
+    o'qish paytida eskirgan QIYMATLARNI filtrlaydi, lekin butunlay bo'sh
+    qolgan KALITning o'zini hech qachon o'chirmaydi, shuning uchun har
+    bir yangi foydalanuvchi (yoki taklif yuborgan/rad etgan juftlik)
+    serverning butun umri davomida bittalab doimiy xotira band qilib
+    boradi (2026-09-16, unumdorlik auditi)."""
+    while True:
+        await asyncio.sleep(_RATE_LIMIT_CLEANUP_INTERVAL_SECONDS)
+        try:
+            _cleanup_stale_rate_limit_entries()
         except Exception:
             pass  # bitta xato butun tsiklni to'xtatmasin
 

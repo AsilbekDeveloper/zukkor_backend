@@ -86,7 +86,7 @@ async def test_reset_password_with_correct_code_changes_password(db_session):
 
     result = await db_session.execute(select(User).where(User.email == "user@example.com"))
     user = result.scalar_one()
-    assert verify_password("YangiParol1234", user.hashed_password)
+    assert await verify_password("YangiParol1234", user.hashed_password)
 
     # Endi shu kod bilan yangi login qilib bo'ladi.
     tokens = await login(_next_request(), LoginRequest(email="user@example.com", password="YangiParol1234"), db=db_session)

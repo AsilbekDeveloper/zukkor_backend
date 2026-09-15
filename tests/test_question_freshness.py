@@ -8,7 +8,7 @@ from app.schemas.quiz import AnswerRequest, QuizStartRequest
 
 
 async def _create_user(db, email: str) -> User:
-    user = User(email=email, hashed_password=hash_password("Parol1234"))
+    user = User(email=email, hashed_password=await hash_password("Parol1234"))
     db.add(user)
     await db.flush()
     return user

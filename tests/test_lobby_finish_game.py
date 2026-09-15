@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base
-from app.core.security import hash_password
 from app.models.lobby_game import LobbyGameResult
 from app.models.quiz import Category
 from app.models.user import User
@@ -27,7 +26,10 @@ class _FakeWebSocket:
 
 
 def _user(user_id: str) -> User:
-    return User(id=user_id, email=f"{user_id}@example.com", hashed_password=hash_password("Parol1234"))
+    # Bu testlar parolni hech qachon tekshirmaydi - bcrypt endi async
+    # (`asyncio.to_thread`) bo'lgani uchun, faqat DB ustunini to'ldirish
+    # uchun soxta qiymat, haqiqiy hash emas.
+    return User(id=user_id, email=f"{user_id}@example.com", hashed_password="not-a-real-hash")
 
 
 @pytest.fixture(autouse=True)

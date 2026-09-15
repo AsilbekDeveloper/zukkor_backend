@@ -10,7 +10,7 @@ from app.routers.leaderboard import get_player_stats
 
 
 async def _create_user(db, email: str, total_xp: int = 0, **kwargs) -> User:
-    user = User(email=email, hashed_password=hash_password("Parol1234"), total_xp=total_xp, **kwargs)
+    user = User(email=email, hashed_password=await hash_password("Parol1234"), total_xp=total_xp, **kwargs)
     db.add(user)
     await db.flush()
     return user

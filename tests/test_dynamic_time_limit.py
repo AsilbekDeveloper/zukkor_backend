@@ -22,7 +22,7 @@ _LONG_OPTIONS = [
 
 
 async def _create_user(db) -> User:
-    user = User(email="timelimit@example.com", hashed_password=hash_password("Parol1234"))
+    user = User(email="timelimit@example.com", hashed_password=await hash_password("Parol1234"))
     db.add(user)
     await db.flush()
     return user

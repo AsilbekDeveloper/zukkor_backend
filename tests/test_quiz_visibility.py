@@ -11,7 +11,7 @@ from app.services.quiz_access import can_access_category
 
 
 async def _create_user(db, email: str) -> User:
-    user = User(email=email, hashed_password=hash_password("Parol1234"))
+    user = User(email=email, hashed_password=await hash_password("Parol1234"))
     db.add(user)
     await db.flush()
     return user

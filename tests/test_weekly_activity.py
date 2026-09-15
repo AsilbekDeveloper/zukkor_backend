@@ -15,7 +15,7 @@ from app.routers.history import get_weekly_activity
 
 
 async def _create_user(db, email="user@example.com") -> User:
-    user = User(email=email, hashed_password=hash_password("Parol1234"))
+    user = User(email=email, hashed_password=await hash_password("Parol1234"))
     db.add(user)
     await db.flush()
     return user

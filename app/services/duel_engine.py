@@ -120,13 +120,33 @@ async def _category_summary(db, category: Category) -> dict:
     }
 
 
-async def _pick_question(db, category_id: int, exclude_ids: list[int]) -> Question | None:
-    stmt = select(Question).where(Question.category_id == category_id, Question.is_active.is_(True))
-    if exclude_ids:
-        stmt = stmt.where(Question.id.notin_(exclude_ids))
-    stmt = stmt.order_by(func.random()).limit(1)
-    result = await db.execute(stmt)
-    return result.scalar_one_or_none()
+async def _pick_questions(db, category_id: int, count: int) -> list[Question]:
+    """`count` ta savolni tasodifiy tanlaydi - `ORDER BY RANDOM()` EMAS
+    (2026-09-16, unumdorlik auditi): Postgres'da `ORDER BY RANDOM()` mos
+    keluvchi BUTUN jadvalni skaner qilib, har bir qatorga tasodifiy
+    qiymat berib SARALASHNI talab qiladi - indeksdan foydalanmaydi, ko'p
+    duel bir vaqtda boshlanganda (har biri ~10 ta shunday so'rov
+    yuboradi) haqiqiy CPU xarajatiga aylanadi.
+
+    O'rniga: avval FAQAT `id` ustunini olamiz (yengil - indekslangan
+    `category_id`/`is_active` bo'yicha filtrlanadi, saralash yo'q),
+    tasodifiy tanlovni Python'ning `random.sample`ida qilamiz, so'ng
+    faqat tanlangan ID'lar bo'yicha to'liq qatorlarni BITTA `IN (...)`
+    so'rovi bilan olamiz."""
+    id_result = await db.execute(
+        select(Question.id).where(Question.category_id == category_id, Question.is_active.is_(True))
+    )
+    all_ids = id_result.scalars().all()
+    if not all_ids:
+        return []
+
+    selected_ids = random.sample(all_ids, min(count, len(all_ids)))
+
+    rows_result = await db.execute(select(Question).where(Question.id.in_(selected_ids)))
+    by_id = {q.id: q for q in rows_result.scalars().all()}
+    # `IN (...)` tartibni kafolatlamaydi - `selected_ids`dagi (allaqachon
+    # tasodifiy) tartibni saqlab qaytaramiz.
+    return [by_id[qid] for qid in selected_ids if qid in by_id]
 
 
 async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_count: int | None) -> None:
@@ -135,16 +155,11 @@ async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_
     async with AsyncSessionLocal() as db:
         category = await db.get(Category, category_id)
 
-        count_result = await db.execute(
-            select(func.count()).select_from(Question).where(
-                Question.category_id == category_id, Question.is_active.is_(True)
-            )
-        )
-        available = count_result.scalar_one()
-        if available == 0:
+        questions = await _pick_questions(db, category_id, total_requested)
+        if not questions:
             return  # kategoriyada savol yo'q - duel boshlanmaydi
 
-        actual_total = min(total_requested, available)
+        actual_total = len(questions)
 
         duel = Duel(
             category_id=category_id,
@@ -156,13 +171,9 @@ async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_
         db.add(duel)
         await db.flush()  # duel.id kerak - DuelQuestion FK uchun
 
-        used_question_ids: list[int] = []
         questions_data: list[dict] = []
         dq_objects: list[DuelQuestion] = []
-        for i in range(actual_total):
-            question = await _pick_question(db, category_id, used_question_ids)
-            used_question_ids.append(question.id)
-
+        for i, question in enumerate(questions):
             option_order = random.sample(range(len(question.options)), len(question.options))
             shuffled_options = [question.options[j] for j in option_order]
             correct_option = option_order.index(question.correct_option_index)

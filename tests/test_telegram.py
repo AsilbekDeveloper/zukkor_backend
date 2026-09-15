@@ -21,7 +21,7 @@ from app.services import telegram_bot
 
 
 async def _create_user(db, email: str, **kwargs) -> User:
-    user = User(email=email, hashed_password=hash_password("Parol1234"), **kwargs)
+    user = User(email=email, hashed_password=await hash_password("Parol1234"), **kwargs)
     db.add(user)
     await db.flush()
     return user

@@ -108,10 +108,12 @@ async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
         await economy_config.seed_defaults(db)
     expiry_task = asyncio.create_task(duel_ws.expire_duel_invites_loop())
+    duel_rate_limit_cleanup_task = asyncio.create_task(duel_ws.cleanup_stale_rate_limit_entries_loop())
     notification_cleanup_task = asyncio.create_task(notifications.cleanup_old_notifications_loop())
     streak_reminder_task = asyncio.create_task(streak_reminder_loop())
     yield
     expiry_task.cancel()
+    duel_rate_limit_cleanup_task.cancel()
     notification_cleanup_task.cancel()
     streak_reminder_task.cancel()
 

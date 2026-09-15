@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -8,8 +9,16 @@ import jwt
 from app.core.config import settings
 
 
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+async def hash_password(password: str) -> str:
+    # bcrypt ATAYLAB sekin (CPU-bog'liq, ~100-300ms) - to'g'ridan-to'g'ri
+    # chaqirilsa, bitta process/bitta event loop'da (uvicorn --workers'siz
+    # ishga tushadi - app/services/duel_engine.py'dagi in-memory Duel
+    # holati buni talab qiladi) shu vaqt davomida BUTUN server - barcha
+    # boshqa foydalanuvchilarning Duel WebSocket xabarlari ham - muzlab
+    # qolardi (2026-09-16, unumdorlik auditi). `asyncio.to_thread` buni
+    # alohida thread'ga chiqaradi, event loop bo'shab qoladi.
+    hashed = await asyncio.to_thread(bcrypt.hashpw, password.encode(), bcrypt.gensalt())
+    return hashed.decode()
 
 
 def hash_token(token: str) -> str:
@@ -22,8 +31,10 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
+async def verify_password(plain: str, hashed: str) -> bool:
+    # `hash_password`dagi bilan bir xil sabab - tekshirish ham bcrypt
+    # orqali, xuddi shunday sekin.
+    return await asyncio.to_thread(bcrypt.checkpw, plain.encode(), hashed.encode())
 
 
 # Login'da "email topilmadi" holatini "parol noto'g'ri" holatidan ajratib

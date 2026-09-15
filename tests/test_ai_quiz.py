@@ -54,7 +54,7 @@ async def _create_user(db, email="user@example.com") -> User:
     # marta chaqiradi, balans yetarli emasligi sababli 402 bilan
     # to'xtamasligi uchun (haqiqiy narx bu yerda ahamiyatsiz - fake
     # generatsiya funksiyalari doim kichik, sobit token soni qaytaradi).
-    user = User(email=email, hashed_password=hash_password("Parol1234"), diamond_balance=100_000)
+    user = User(email=email, hashed_password=await hash_password("Parol1234"), diamond_balance=100_000)
     db.add(user)
     await db.flush()
     return user

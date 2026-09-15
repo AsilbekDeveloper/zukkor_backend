@@ -35,7 +35,7 @@ async def test_cleanup_deletes_only_notifications_older_than_retention(_isolated
     recent = now - timedelta(days=1)
 
     async with _isolated_session_maker() as db:
-        user = User(email="u@t.co", hashed_password=hash_password("Parol1234"))
+        user = User(email="u@t.co", hashed_password=await hash_password("Parol1234"))
         db.add(user)
         await db.flush()
         db.add(Notification(user_id=user.id, kind="welcome", created_at=old_cutoff))

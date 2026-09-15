@@ -65,7 +65,7 @@ async def register(request: Request, data: RegisterRequest, db: AsyncSession = D
 
     user = User(
         email=data.email,
-        hashed_password=hash_password(data.password),
+        hashed_password=await hash_password(data.password),
     )
     # Boshlang'ich bepul Diamond + Coin + o'z taklif kodi - [[ai_cost_architecture]].
     await wallet.apply_signup_defaults(db, user)
@@ -124,7 +124,7 @@ async def login(request: Request, data: LoginRequest, db: AsyncSession = Depends
     # also ensures bcrypt runs every time (even for a nonexistent email),
     # so response timing can't reveal which emails are registered.
     hashed_for_check = user.hashed_password if user and user.hashed_password else DUMMY_PASSWORD_HASH
-    password_ok = verify_password(data.password, hashed_for_check)
+    password_ok = await verify_password(data.password, hashed_for_check)
     if not user or not user.hashed_password or not password_ok:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email yoki parol noto'g'ri")
 
@@ -302,12 +302,13 @@ async def change_password(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if not current_user.hashed_password or not verify_password(
+    current_password_ok = current_user.hashed_password and await verify_password(
         data.current_password, current_user.hashed_password
-    ):
+    )
+    if not current_password_ok:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Joriy parol noto'g'ri")
 
-    current_user.hashed_password = hash_password(data.new_password)
+    current_user.hashed_password = await hash_password(data.new_password)
 
     # Hisob buzilgan taqdirda ham parol almashtirish haqiqiy himoya bo'lishi
     # uchun - tajovuzkorning qo'lidagi eski refresh token ishlab turmasin.
@@ -395,7 +396,7 @@ async def reset_password(request: Request, data: ResetPasswordRequest, db: Async
         raise generic_error
 
     reset_code.is_used = True
-    user.hashed_password = hash_password(data.new_password)
+    user.hashed_password = await hash_password(data.new_password)
 
     # change_password bilan bir xil ehtiyot chorasi - eski refresh tokenlar
     # (masalan tajovuzkorning qo'lidagilari) endi ishlamay qoladi.
@@ -449,7 +450,8 @@ async def delete_account(
     # tekshirishga hech narsa yo'q; joriy JWT sessiyaning o'zi identifikatsiya
     # sifatida yetarli. Aks holda (email/parol hisobi) parol majburiy.
     if current_user.hashed_password is not None:
-        if not data.password or not verify_password(data.password, current_user.hashed_password):
+        password_ok = data.password and await verify_password(data.password, current_user.hashed_password)
+        if not password_ok:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Parol noto'g'ri")
 
     user_id = current_user.id

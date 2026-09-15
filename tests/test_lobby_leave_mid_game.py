@@ -1,6 +1,5 @@
 import pytest
 
-from app.core.security import hash_password
 from app.models.user import User
 from app.services import lobby_manager
 
@@ -14,7 +13,10 @@ class _FakeWebSocket:
 
 
 def _user(user_id: str) -> User:
-    return User(id=user_id, email=f"{user_id}@example.com", hashed_password=hash_password("Parol1234"))
+    # Bu testlar parolni hech qachon tekshirmaydi - bcrypt endi async
+    # (`asyncio.to_thread`) bo'lgani uchun, faqat DB ustunini to'ldirish
+    # uchun soxta qiymat, haqiqiy hash emas.
+    return User(id=user_id, email=f"{user_id}@example.com", hashed_password="not-a-real-hash")
 
 
 def _make_room_with_game(participant_ids: list[str]) -> lobby_manager._Room:
