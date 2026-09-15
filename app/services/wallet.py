@@ -145,23 +145,96 @@ async def credit_diamond(db: AsyncSession, user: User, amount: int, reason: str,
     await _record(db, user, currency="diamond", amount=amount, reason=reason, extra=extra)
 
 
-async def debit_diamond(db: AsyncSession, user: User, amount: int, reason: str, extra: dict | None = None) -> None:
-    """Diamond yechish - `credit_diamond(-amount, ...)` bilan bir xil,
-    lekin chaqiruvchi tomonda ishorani unutmaslik uchun alohida nom.
-    `require_sufficient=False` (standart) - `ai_quiz.py` buni generatsiya
-    MUVAFFAQIYATLI tugagandan keyin chaqiradi, shu bosqichda endi
-    "yetarli emas" desak ham Gemini xarajati allaqachon qilingan bo'ladi,
-    shuning uchun bu yerda balans manfiyga tushishi mumkin (kamdan-kam,
-    faqat haqiqiy poyga holatida) - buni butunlay man qilish alohida
-    mahsulot qarorini talab qiladi (masalan generatsiyani bekor qilish)."""
-    await _record(db, user, currency="diamond", amount=-abs(amount), reason=reason, extra=extra)
+async def reserve_diamond(db: AsyncSession, user: User, amount: int) -> None:
+    """AI-generatsiya BOSHLANISHIDAN OLDIN (Gemini chaqirilishidan oldin),
+    taxminiy narxni ATOMIK ravishda "band qiladi" (balansdan darhol
+    yechib qo'yadi, lekin hali CurrencyTransaction YOZMAYDI - ledger'da
+    foydalanuvchiga faqat HAQIQIY yakuniy narx bitta yozuv sifatida
+    ko'rinadi, `finalize_diamond_reservation`ga qarang).
+
+    2026-09-16, xavfsizlik auditi: avvalgi kod balansni Python darajasida
+    o'qib solishtirar (`if user.diamond_balance < estimated_cost`), keyin
+    Gemini MUVAFFAQIYATLI chaqirilgandan SO'NG `require_sufficient=False`
+    bilan yechardi. Bu ikki bosqich orasida poyga (race condition) bor
+    edi: bitta foydalanuvchidan bir vaqtning o'zida kelgan bir nechta
+    parallel so'rov hammasi BIR XIL (eskirgan) boshlang'ich balansni
+    o'qib, hammasi "yetarli" degan noto'g'ri xulosaga kelib, hammasi
+    Gemini'ni chaqirar edi - 1 ta Diamondi bor odam ham bir nechta
+    parallel so'rov bilan bir nechta Gemini chaqiruvini "to'lovsiz"
+    qildira olardi.
+
+    Bu funksiya o'rniga DB darajasidagi bitta atomik
+    `UPDATE ... WHERE balance + amount >= 0` ishlatadi
+    (`apply_atomic_balance_delta(require_sufficient=True)`) - parallel
+    so'rovlar endi PostgreSQL'ning qator darajasidagi qulfi orqali
+    navbat bilan ishlaydi, ikkinchisi birinchisi band qilib ulgurgan
+    miqdorni ALLAQACHON kamaytirilgan balansdan ko'radi. `SELECT ... FOR
+    UPDATE` bilan qo'lda qulflashdan farqli - bu yerda qulf FAQAT shu
+    tezkor UPDATE davomida ushlab turiladi, keyin darhol COMMIT qilinadi
+    (pastda) - sekin (soniyalar davom etadigan) Gemini so'rovi davomida
+    DB tranzaksiyasi/qulfi OCHIQ qolib ketmaydi, aks holda bir xil
+    foydalanuvchining boshqa (masalan Profil balansini o'qiydigan)
+    so'rovlari ham shu vaqt osilib qolardi.
+
+    Yetarli bo'lmasa `InsufficientBalanceError` ko'taradi (hech narsa
+    yozilmagan - muvaffaqiyatsiz `UPDATE` shunchaki 0 qatorga tegadi,
+    ROLLBACK qilish shart emas: buni qasddan qilmaymiz, chunki
+    `db.rollback()` sessiyadagi barcha ORM obyektlarini "eskirgan" deb
+    belgilaydi va chaqiruvchi keyin ularning maydonini o'qisa, kutilmagan
+    qo'shimcha SELECT'ga olib keladi)."""
+    await apply_atomic_balance_delta(db, user, currency="diamond", amount=-abs(amount), require_sufficient=True)
+    await db.commit()
+
+
+async def release_diamond_reservation(db: AsyncSession, user: User, amount: int) -> None:
+    """`reserve_diamond` band qilgan miqdorni TO'LIQ qaytaradi -
+    generatsiya butunlay muvaffaqiyatsiz bo'lganda (Gemini xatosi yoki
+    kunlik chegara) chaqiriladi. Hech qanday CurrencyTransaction
+    yaratmaydi - xuddi hech narsa bo'lmagandek (foydalanuvchi hech qachon
+    bo'lmagan narsa uchun to'lamaydi, avvalgi xulq-atvor bilan bir xil).
+    Darhol COMMIT qiladi."""
+    await apply_atomic_balance_delta(db, user, currency="diamond", amount=abs(amount), require_sufficient=False)
+    await db.commit()
+
+
+async def finalize_diamond_reservation(
+    db: AsyncSession,
+    user: User,
+    *,
+    reserved_amount: int,
+    actual_amount: int,
+    reason: str,
+    extra: dict | None = None,
+) -> None:
+    """Generatsiya MUVAFFAQIYATLI tugagach chaqiriladi - `reserve_diamond`
+    band qilgan (`reserved_amount`) va haqiqiy (`actual_amount`, token
+    sarfidan hisoblangan) narx orasidagi farqni to'g'rilaydi (band
+    qilingan miqdor haqiqiysidan qimmat chiqsa - qaytaradi, arzon chiqsa -
+    qo'shimcha yechadi, bu bosqichda ham balans manfiyga tushishi mumkin,
+    chunki Gemini xarajati ALLAQACHON qilingan) va ANIQ BITTA
+    CurrencyTransaction yozuvini yaratadi - Wallet ekranida foydalanuvchi
+    bitta aniq "AI generatsiya" qatorini ko'radi, taxminiy/tuzatish
+    yozuvlariga bo'linib ketmaydi. Chaqiruvchi COMMIT qilishi kerak
+    (odatda quiz/savollar yaratish bilan bir tranzaksiyada)."""
+    delta = actual_amount - reserved_amount
+    if delta != 0:
+        await apply_atomic_balance_delta(db, user, currency="diamond", amount=-delta, require_sufficient=False)
+    db.add(
+        CurrencyTransaction(
+            user_id=user.id,
+            currency="diamond",
+            amount=-actual_amount,
+            reason=reason,
+            balance_after=user.diamond_balance,
+            extra=extra,
+        )
+    )
 
 
 async def debit_coin(db: AsyncSession, user: User, amount: int, reason: str, extra: dict | None = None) -> None:
-    """Coin yechish - `debit_diamond` bilan bir xil naqsh, balans
-    yetarli bo'lmasa ham manfiyga tushiradi. Balans HECH QACHON
-    manfiyga tushmasligi kerak bo'lgan chaqiruvchilar (masalan
-    `charge_for_question_play`) buning o'rniga `_record`ni
+    """Coin yechish - balans yetarli bo'lmasa ham manfiyga tushiradi.
+    Balans HECH QACHON manfiyga tushmasligi kerak bo'lgan chaqiruvchilar
+    (masalan `charge_for_question_play`) buning o'rniga `_record`ni
     `require_sufficient=True` bilan to'g'ridan-to'g'ri chaqiradi."""
     await _record(db, user, currency="coin", amount=-abs(amount), reason=reason, extra=extra)
 

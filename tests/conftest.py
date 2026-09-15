@@ -68,3 +68,25 @@ async def db_session():
     async with session_maker() as session:
         yield session
     await engine.dispose()
+
+
+@pytest.fixture
+async def db_engine():
+    """`db_session`dan farqli - BITTA session emas, ENGINE'ning o'zini
+    beradi, shunda test bir nechta MUSTAQIL (parallel) session ocha oladi
+    (`async_sessionmaker(engine)` orqali) - haqiqiy poyga holati
+    (race condition) testlari uchun kerak, masalan bir xil foydalanuvchiga
+    bir vaqtning o'zida kelgan bir nechta so'rov balansni to'g'ri
+    tekshirib-yechayotganini tekshirish (`test_wallet.py`dagi
+    `test_reserve_diamond_never_overdraws_under_concurrent_requests`).
+    `StaticPool` tufayli barcha session'lar bitta xotiradagi SQLite bazani
+    baham ko'radi."""
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield engine
+    await engine.dispose()

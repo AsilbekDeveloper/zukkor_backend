@@ -7,10 +7,12 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import Base
 from app.core.security import hash_password
 from app.models.ai_quiz_job import AiQuizGenerationJob
+from app.models.currency_transaction import CurrencyTransaction
 from app.models.quiz import Category, Question
 from app.models.user import User
 from app.routers import ai_quiz
 from app.routers.ai_quiz import generate_ai_quiz_async, get_generation_job
+from app.services import ai_usage_limiter, wallet
 from app.services.ai_quiz_generation import GeneratedQuiz, QuizGenerationError
 from conftest import make_request
 
@@ -106,6 +108,21 @@ async def test_topic_job_starts_pending_then_completes(_isolated_session_maker, 
         ).scalars().all()
         assert len(questions) == 1
 
+        # 2026-09-16 xavfsizlik auditi: taxminiy narx OLDINDAN band
+        # qilingan, generatsiya tugagach haqiqiy narxga moslashtirildi -
+        # yakunda faqat bitta "ai_generation" ledger yozuvi bor va u
+        # HAQIQIY (band qilingandan farqli bo'lishi mumkin) narxni
+        # ko'rsatadi.
+        expected_cost = wallet.diamond_cost_from_tokens(input_tokens=100, output_tokens=100)
+        refreshed_user = await bg_db.get(User, user.id)
+        assert refreshed_user.diamond_balance == 100_000 - expected_cost
+        assert finished_job.diamond_cost == expected_cost
+        tx = (
+            await bg_db.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))
+        ).scalar_one()
+        assert tx.amount == -expected_cost
+        assert tx.reason == "ai_generation"
+
     assert _fake_push.calls
     push_user_id, push_title, _, push_data = _fake_push.calls[0]
     assert push_user_id == user.id
@@ -143,10 +160,65 @@ async def test_job_failure_is_recorded_and_pushed(_isolated_session_maker, _fake
         assert job.status == "failed"
         assert job.error_message == "AI xizmati hozircha sozlanmagan"
 
+        # 2026-09-16 xavfsizlik auditi: generatsiya butunlay
+        # muvaffaqiyatsiz bo'lgani uchun band qilingan taxminiy narx
+        # TO'LIQ qaytarildi - hech narsa to'lanmadi.
+        refreshed_user = await bg_db.get(User, user.id)
+        assert refreshed_user.diamond_balance == 100_000
+        all_tx = (
+            await bg_db.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))
+        ).scalars().all()
+        assert all_tx == []
+
     assert _fake_push.calls
     _, push_title, _, push_data = _fake_push.calls[0]
     assert push_title == "Quiz yaratib bo'lmadi"
     assert push_data == {"type": "ai_quiz_failed"}
+
+
+@pytest.mark.anyio
+async def test_generate_async_rejects_when_diamond_balance_is_insufficient(db_session):
+    user = await _create_user(db_session, "poor_async@example.com")
+    user.diamond_balance = 0
+    await db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await generate_ai_quiz_async(
+            make_request(),
+            BackgroundTasks(),
+            file=None,
+            instruction=None,
+            topic="Tarix",
+            question_count=1,
+            topic_category_id=None,
+            current_user=user,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 402
+    assert user.diamond_balance == 0
+
+
+@pytest.mark.anyio
+async def test_generate_async_returns_503_and_refunds_when_the_daily_gemini_limit_is_reached(db_session, monkeypatch):
+    monkeypatch.setattr(ai_usage_limiter.settings, "MAX_DAILY_GEMINI_CALLS", 0)
+    user = await _create_user(db_session, "throttled_async@example.com")
+    user.diamond_balance = 100
+    await db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await generate_ai_quiz_async(
+            make_request(),
+            BackgroundTasks(),
+            file=None,
+            instruction=None,
+            topic="Tarix",
+            question_count=1,
+            topic_category_id=None,
+            current_user=user,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 503
+    assert user.diamond_balance == 100
 
 
 @pytest.mark.anyio

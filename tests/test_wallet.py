@@ -3,10 +3,12 @@
 birinchi-o'yin/7-kunlik-streak Coin mukofotlari, referral bonusi, va
 Diamond narxlash formulasi (haqiqiy token sarfidan)."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import settings
 from app.core.security import hash_password
@@ -461,3 +463,140 @@ def test_validate_value_allows_non_percent_keys_above_100():
     # Faqat foiz turidagi kalitlar 100 bilan chegaralangan - bonus/narx
     # kabi kalitlar istalgan katta musbat songa ega bo'lishi mumkin.
     assert economy_config.validate_value(economy_config.STREAK_BONUS_7D, "500") == 500
+
+
+# --- reserve/release/finalize Diamond (2026-09-16, xavfsizlik auditi:
+# AI-generatsiya endi Gemini chaqirilishidan OLDIN taxminiy narxni ATOMIK
+# ravishda band qiladi, TOCTOU poyga holatini yopish uchun) ---
+
+
+@pytest.mark.anyio
+async def test_reserve_diamond_deducts_immediately_without_a_ledger_row(db_session):
+    user = await _create_user(db_session, "reserve@example.com", diamond_balance=100)
+    await db_session.commit()
+
+    await wallet.reserve_diamond(db_session, user, 30)
+
+    assert user.diamond_balance == 70
+    # Ledger'da hali hech narsa yo'q - foydalanuvchiga faqat
+    # `finalize_diamond_reservation` orqali BITTA yakuniy yozuv ko'rinadi.
+    rows = (await db_session.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.anyio
+async def test_reserve_diamond_rejects_and_writes_nothing_when_balance_too_low(db_session):
+    user = await _create_user(db_session, "reserve_poor@example.com", diamond_balance=10)
+    await db_session.commit()
+
+    with pytest.raises(wallet.InsufficientBalanceError):
+        await wallet.reserve_diamond(db_session, user, 30)
+
+    assert user.diamond_balance == 10
+
+
+@pytest.mark.anyio
+async def test_release_diamond_reservation_refunds_in_full(db_session):
+    user = await _create_user(db_session, "release@example.com", diamond_balance=100)
+    await db_session.commit()
+
+    await wallet.reserve_diamond(db_session, user, 30)
+    assert user.diamond_balance == 70
+
+    await wallet.release_diamond_reservation(db_session, user, 30)
+    assert user.diamond_balance == 100
+    # To'liq muvaffaqiyatsizlikda ham ledger'ga hech narsa yozilmaydi.
+    rows = (await db_session.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.anyio
+async def test_finalize_diamond_reservation_writes_exactly_one_row_at_the_actual_price(db_session):
+    user = await _create_user(db_session, "finalize@example.com", diamond_balance=100)
+    await db_session.commit()
+
+    await wallet.reserve_diamond(db_session, user, 30)  # taxminiy narx
+    await wallet.finalize_diamond_reservation(
+        db_session, user, reserved_amount=30, actual_amount=45, reason="ai_generation", extra={"question_count": 5}
+    )
+    await db_session.commit()
+
+    # Band qilingan 30 + qo'shimcha 15 = umumiy 45 yechildi.
+    assert user.diamond_balance == 55
+    rows = (await db_session.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].amount == -45
+    assert rows[0].reason == "ai_generation"
+    assert rows[0].balance_after == 55
+
+
+@pytest.mark.anyio
+async def test_finalize_diamond_reservation_refunds_the_difference_when_actual_cost_is_lower(db_session):
+    user = await _create_user(db_session, "finalize_cheap@example.com", diamond_balance=100)
+    await db_session.commit()
+
+    await wallet.reserve_diamond(db_session, user, 30)
+    await wallet.finalize_diamond_reservation(
+        db_session, user, reserved_amount=30, actual_amount=10, reason="ai_generation"
+    )
+    await db_session.commit()
+
+    assert user.diamond_balance == 90
+    tx = (await db_session.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))).scalar_one()
+    assert tx.amount == -10
+
+
+@pytest.mark.anyio
+async def test_finalize_diamond_reservation_can_take_balance_negative_when_actual_cost_is_higher(db_session):
+    # Gemini xarajati ALLAQACHON qilingan - shu bosqichda "yetarli emas"
+    # deb rad etish endi hech narsaga foyda bermaydi.
+    user = await _create_user(db_session, "finalize_over@example.com", diamond_balance=20)
+    await db_session.commit()
+
+    await wallet.reserve_diamond(db_session, user, 20)
+    await wallet.finalize_diamond_reservation(
+        db_session, user, reserved_amount=20, actual_amount=35, reason="ai_generation"
+    )
+    await db_session.commit()
+
+    assert user.diamond_balance == -15
+
+
+@pytest.mark.anyio
+async def test_reserve_diamond_never_overdraws_under_concurrent_requests(db_engine):
+    """2026-09-16 xavfsizlik auditi topilmasining aynan o'zi: bitta
+    foydalanuvchidan bir vaqtning o'zida kelgan bir nechta parallel
+    so'rov, avvalgi (Python darajasidagi `if balance < cost`) tekshiruv
+    bilan, hammasi bir xil eskirgan balansni ko'rib, hammasi "yetarli"
+    deb noto'g'ri qarorga kelardi. Bu test har biri O'ZINING alohida DB
+    session'i bilan (`test_wallet.py`dagi eski izohda aytilganidek, bitta
+    session/ulanish bilan haqiqiy poyga aks etmaydi) 10 ta parallel
+    `reserve_diamond` chaqiradi - balans 100, har biri 30 so'raydi, faqat
+    3 tasi (90) muvaffaqiyatli bo'lishi, qolgan 7 tasi
+    `InsufficientBalanceError` bilan rad etilishi va balans HECH QACHON
+    manfiyga tushmasligi kerak."""
+    session_maker = async_sessionmaker(db_engine, expire_on_commit=False)
+
+    async with session_maker() as setup_db:
+        user = await _create_user(setup_db, "race@example.com", diamond_balance=100)
+        await setup_db.commit()
+        user_id = user.id
+
+    async def _attempt_reserve() -> bool:
+        async with session_maker() as db:
+            user_row = await db.get(User, user_id)
+            try:
+                await wallet.reserve_diamond(db, user_row, 30)
+                return True
+            except wallet.InsufficientBalanceError:
+                return False
+
+    results = await asyncio.gather(*[_attempt_reserve() for _ in range(10)])
+    succeeded = sum(results)
+
+    assert succeeded == 3  # 100 // 30
+
+    async with session_maker() as verify_db:
+        final_user = await verify_db.get(User, user_id)
+        assert final_user.diamond_balance == 100 - succeeded * 30
+        assert final_user.diamond_balance >= 0

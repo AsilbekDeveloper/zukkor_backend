@@ -95,6 +95,16 @@ class Settings(BaseSettings):
     # ilova serverga so'rov yubormasdan JONLI taxmin ko'rsata oladi.
     CHARS_PER_TOKEN_ESTIMATE: int = 4
 
+    # Global "circuit breaker" - butun tizim bo'yicha bir kunda (Toshkent
+    # mahalliy kuni) ko'pi bilan shuncha Gemini chaqiruviga ruxsat beriladi,
+    # undan oshsa YANGI so'rovlar Gemini'ni umuman chaqirmasdan 503 bilan
+    # rad etiladi - individual foydalanuvchi/IP limitlaridan MUSTAQIL,
+    # yuqori chegara (masalan minglab soxta akkaunt yoki narx-hisoblash
+    # xatosi bo'lsa ham, kunlik umumiy zarar shu bilan cheklangan bo'lib
+    # qoladi). `app/services/ai_usage_limiter.py`ga qarang (2026-09-16,
+    # xavfsizlik auditi asosida qo'shildi).
+    MAX_DAILY_GEMINI_CALLS: int = 500
+
     # Telegram bot - Diamond sotib olish kanali. @BotFather'dan olinadi
     # (foydalanuvchi o'zi qiladi - bu qadamni Claude bosib chiqolmaydi).
     # Bo'sh bo'lsa /telegram/webhook hech narsa qilmasdan 200 qaytaradi -

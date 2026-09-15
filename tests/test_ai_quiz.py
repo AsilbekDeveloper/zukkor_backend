@@ -5,8 +5,10 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 
 from app.core.security import hash_password
+from app.models.currency_transaction import CurrencyTransaction
 from app.models.quiz import Category, Question
 from app.models.user import User
+from app.routers import ai_quiz
 from app.routers.ai_quiz import (
     add_quiz_question,
     create_manual_quiz,
@@ -24,6 +26,7 @@ from app.routers.categories import list_categories
 from app.routers.quiz import start_quiz
 from app.schemas.ai_quiz import ManualQuestionIn, ManualQuizCreate, TopicUpdate, VisibilityUpdate
 from app.schemas.quiz import QuizStartRequest
+from app.services import ai_usage_limiter, wallet
 from app.services.ai_quiz_generation import GeneratedQuiz, QuizGenerationError, _validate_questions
 from app.services.document_text import UnsupportedDocumentError, extract_text
 from conftest import make_request
@@ -222,6 +225,115 @@ async def test_generate_ai_quiz_rejects_unsupported_file(db_session, monkeypatch
     assert exc_info.value.status_code == 400
 
 
+
+
+@pytest.mark.anyio
+async def test_generate_ai_quiz_rejects_when_diamond_balance_is_insufficient(db_session, monkeypatch):
+    # 2026-09-16 xavfsizlik auditi: balans tekshiruvi endi ATOMIK
+    # (`wallet.reserve_diamond`) - Gemini bu holatda UMUMAN chaqirilmaydi.
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
+    user = await _create_user(db_session, "poor@example.com")
+    user.diamond_balance = 0
+    await db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await generate_ai_quiz(
+            request=make_request(),
+            file=_upload("kitob.txt", b"kitobning matni"),
+            instruction="x",
+            topic=None,
+            question_count=2,
+            topic_category_id=None,
+            current_user=user,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 402
+    assert user.diamond_balance == 0
+
+    # Balans yetarli bo'lmagani uchun Gemini hech qachon chaqirilmadi -
+    # kunlik hisoblagich ham o'zgarmadi.
+    assert await ai_usage_limiter.reserve_daily_gemini_call(db_session) == 1
+
+
+@pytest.mark.anyio
+async def test_generate_ai_quiz_refunds_the_full_reservation_when_gemini_fails(db_session, monkeypatch):
+    async def _boom(text, instruction, count):
+        raise QuizGenerationError("AI xizmati hozircha sozlanmagan")
+
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _boom)
+    user = await _create_user(db_session, "boom@example.com")
+    user.diamond_balance = 100
+    await db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await generate_ai_quiz(
+            request=make_request(),
+            file=_upload("kitob.txt", b"kitobning matni"),
+            instruction="x",
+            topic=None,
+            question_count=2,
+            topic_category_id=None,
+            current_user=user,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 502
+    # Band qilingan taxminiy narx to'liq qaytarildi - muvaffaqiyatsiz
+    # urinish uchun hech narsa to'lanmaydi.
+    assert user.diamond_balance == 100
+    all_tx = (await db_session.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))).scalars().all()
+    assert all_tx == []
+
+
+@pytest.mark.anyio
+async def test_generate_ai_quiz_writes_exactly_one_ledger_row_at_the_real_price(db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
+    user = await _create_user(db_session, "priced@example.com")
+    user.diamond_balance = 100_000
+    await db_session.commit()
+
+    result = await generate_ai_quiz(
+        request=make_request(),
+        file=_upload("kitob.txt", b"kitobning matni"),
+        instruction="x",
+        topic=None,
+        question_count=2,
+        topic_category_id=None,
+        current_user=user,
+        db=db_session,
+    )
+
+    expected_cost = wallet.diamond_cost_from_tokens(input_tokens=100, output_tokens=100)  # _fake_generate_questions
+    assert result.diamond_cost == expected_cost
+    assert user.diamond_balance == 100_000 - expected_cost
+    tx = (await db_session.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))).scalar_one()
+    assert tx.amount == -expected_cost
+    assert tx.reason == "ai_generation"
+    assert tx.balance_after == user.diamond_balance
+
+
+@pytest.mark.anyio
+async def test_generate_ai_quiz_returns_503_and_refunds_when_the_daily_gemini_limit_is_reached(db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
+    monkeypatch.setattr(ai_usage_limiter.settings, "MAX_DAILY_GEMINI_CALLS", 0)
+    user = await _create_user(db_session, "throttled@example.com")
+    user.diamond_balance = 100
+    await db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await generate_ai_quiz(
+            request=make_request(),
+            file=_upload("kitob.txt", b"kitobning matni"),
+            instruction="x",
+            topic=None,
+            question_count=2,
+            topic_category_id=None,
+            current_user=user,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 503
+    # Kunlik chegara tufayli rad etilgan so'rov uchun band qilingan
+    # Diamond to'liq qaytarildi.
+    assert user.diamond_balance == 100
 
 
 @pytest.mark.anyio

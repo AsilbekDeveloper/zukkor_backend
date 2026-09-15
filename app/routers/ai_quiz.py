@@ -29,7 +29,7 @@ from app.services.ai_quiz_generation import QuizGenerationError, _validate_quest
 from app.services.document_text import UnsupportedDocumentError, extract_text
 from app.services.push import send_push_to_user
 from app.services.quiz_access import can_access_category, is_friend
-from app.services import wallet
+from app.services import ai_usage_limiter, wallet
 
 router = APIRouter()
 
@@ -168,43 +168,63 @@ async def generate_ai_quiz(
         estimated_cost = wallet.estimate_diamond_cost(
             estimated_input_tokens=_estimate_input_tokens(text), question_count=question_count
         )
-        if current_user.diamond_balance < estimated_cost:
-            raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Diamond balansi yetarli emas")
+    else:
+        estimated_cost = wallet.estimate_diamond_cost(
+            estimated_input_tokens=_estimate_input_tokens(topic_clean), question_count=question_count
+        )
 
+    # Taxminiy narxni ATOMIK ravishda band qilamiz - Gemini
+    # chaqirilishidan OLDIN, DB darajasidagi qulf orqali (parallel
+    # so'rovlar poyasiz navbat bilan tekshiriladi). Yetarli bo'lmasa
+    # Gemini UMUMAN chaqirilmaydi. [[wallet.reserve_diamond]]
+    try:
+        await wallet.reserve_diamond(db, current_user, estimated_cost)
+    except wallet.InsufficientBalanceError:
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Diamond balansi yetarli emas")
+
+    # Global kunlik "circuit breaker" - Diamond band qilingandan KEYIN,
+    # Gemini'ning o'zi chaqirilishidan OLDIN tekshiriladi (shunda diamondi
+    # yetarli bo'lmagan so'rovlar kunlik hisoblagichga ta'sir qilmaydi).
+    try:
+        await ai_usage_limiter.reserve_daily_gemini_call(db)
+    except ai_usage_limiter.DailyLimitExceeded:
+        await wallet.release_diamond_reservation(db, current_user, estimated_cost)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Kunlik AI so'rovlar chegarasiga yetildi, birozdan keyin qayta urinib ko'ring",
+        )
+
+    if has_file:
         try:
             result = await generate_questions(text, instruction_clean, question_count)
         except QuizGenerationError as exc:
+            await wallet.release_diamond_reservation(db, current_user, estimated_cost)
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
         questions = result.questions
         title = (file.filename or "AI Quiz").rsplit(".", 1)[0][:50] or "AI Quiz"
         source = "ai_document"
     else:
-        estimated_cost = wallet.estimate_diamond_cost(
-            estimated_input_tokens=_estimate_input_tokens(topic_clean), question_count=question_count
-        )
-        if current_user.diamond_balance < estimated_cost:
-            raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Diamond balansi yetarli emas")
-
         try:
             result = await generate_questions_from_topic(topic_clean, instruction_clean, question_count)
         except QuizGenerationError as exc:
+            await wallet.release_diamond_reservation(db, current_user, estimated_cost)
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
         questions = result.questions
         title = topic_clean[:50] or "AI Quiz"
         source = "ai_topic"
 
-    # Diamond FAQAT shu yerda, generatsiya haqiqatan MUVAFFAQIYATLI
-    # tugagandan keyin, haqiqiy token sarfidan yechiladi - shuning uchun
-    # muvaffaqiyatsiz urinishda "qaytarish" degan alohida mantiq kerak
-    # emas (hech qachon bo'lmagan narsa uchun pul olinmaydi).
+    # Haqiqiy narx - generatsiya MUVAFFAQIYATLI tugagach, haqiqiy token
+    # sarfidan hisoblanadi va band qilingan (taxminiy) miqdorga
+    # moslashtiriladi ([[wallet.finalize_diamond_reservation]]).
     diamond_cost = wallet.diamond_cost_from_tokens(result.input_tokens, result.output_tokens)
-    await wallet.debit_diamond(
+    await wallet.finalize_diamond_reservation(
         db,
         current_user,
-        diamond_cost,
-        "ai_generation",
+        reserved_amount=estimated_cost,
+        actual_amount=diamond_cost,
+        reason="ai_generation",
         extra={
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,
@@ -263,18 +283,25 @@ async def _run_generation_job(
     topic: str,
     question_count: int,
     topic_category_id: int | None,
+    reserved_diamond_cost: int,
 ) -> None:
     """Fon vazifasi (BackgroundTasks) - so'rov allaqachon 202 bilan
     qaytgandan KEYIN ishga tushadi, shuning uchun request-scoped `db`dan
     foydalana olmaydi, o'zining AsyncSessionLocal'ini ochadi (xuddi
-    `duel_engine.forfeit_duel` va boshqa fon vazifalari kabi)."""
+    `duel_engine.forfeit_duel` va boshqa fon vazifalari kabi).
+
+    `reserved_diamond_cost` - `generate_ai_quiz_async` allaqachon ATOMIK
+    ravishda band qilib qo'ygan (yechib qo'ygan) taxminiy narx
+    ([[wallet.reserve_diamond]]) - bu yerda MUVAFFAQIYATLI generatsiyadan
+    keyin haqiqiy narxga moslashtiriladi, muvaffaqiyatsizlikda esa
+    TO'LIQ qaytariladi."""
     async with AsyncSessionLocal() as db:
         job = await db.get(AiQuizGenerationJob, job_id)
         if job is None:
             return
 
+        user = await db.get(User, user_id)
         try:
-            user = await db.get(User, user_id)
             if file_bytes is not None:
                 try:
                     text = extract_text(filename or "", file_bytes)
@@ -293,17 +320,18 @@ async def _run_generation_job(
 
             questions = result.questions
 
-            # Diamond FAQAT muvaffaqiyatli generatsiyadan keyin, haqiqiy
-            # token sarfidan yechiladi - `generate_ai_quiz` (sinxron yo'l)
-            # bilan bir xil mantiq, [[ai_cost_architecture]].
+            # Haqiqiy narx - generatsiya MUVAFFAQIYATLI tugagach, `generate_ai_quiz`
+            # (sinxron yo'l) bilan bir xil mantiq: band qilingan taxminiy
+            # miqdor haqiqiy narxga moslashtiriladi.
             diamond_cost = None
             if user is not None:
                 diamond_cost = wallet.diamond_cost_from_tokens(result.input_tokens, result.output_tokens)
-                await wallet.debit_diamond(
+                await wallet.finalize_diamond_reservation(
                     db,
                     user,
-                    diamond_cost,
-                    "ai_generation",
+                    reserved_amount=reserved_diamond_cost,
+                    actual_amount=diamond_cost,
+                    reason="ai_generation",
                     extra={
                         "input_tokens": result.input_tokens,
                         "output_tokens": result.output_tokens,
@@ -351,6 +379,8 @@ async def _run_generation_job(
                 data={"type": "ai_quiz_ready", "quiz_id": str(category.id)},
             )
         except QuizGenerationError as exc:
+            if user is not None:
+                await wallet.release_diamond_reservation(db, user, reserved_diamond_cost)
             job.status = "failed"
             job.error_message = str(exc)[:300]
             job.finished_at = datetime.now(timezone.utc)
@@ -363,6 +393,8 @@ async def _run_generation_job(
             # deb belgilaymiz, aks holda foydalanuvchi "pending" holatida
             # abadiy kutib qoladi.
             logger.exception("AI quiz generation job muvaffaqiyatsiz bo'ldi (job_id=%s)", job_id)
+            if user is not None:
+                await wallet.release_diamond_reservation(db, user, reserved_diamond_cost)
             job.status = "failed"
             job.error_message = "Kutilmagan xatolik yuz berdi"
             job.finished_at = datetime.now(timezone.utc)
@@ -411,14 +443,30 @@ async def generate_ai_quiz_async(
         file_bytes = await _read_limited(file, MAX_UPLOAD_SIZE_BYTES)
         filename = file.filename
 
-    # Fon vazifasi (`_run_generation_job`) behuda ishga tushmasin - haqiqiy
-    # narx generatsiya tugagach qayta hisoblanadi, bu faqat tахminiy tekshiruv.
+    # Fon vazifasi (`_run_generation_job`) behuda ishga tushmasin - taxminiy
+    # narx hisoblanadi va ATOMIK ravishda BAND QILINADI shu yerda (fon
+    # vazifasi boshlanishidan OLDIN) - haqiqiy narx generatsiya tugagach
+    # qayta hisoblanadi va shu band qilingan miqdorga moslashtiriladi.
     estimated_cost = wallet.estimate_diamond_cost(
         estimated_input_tokens=_estimate_input_tokens(file_bytes if file_bytes is not None else topic_clean),
         question_count=question_count,
     )
-    if current_user.diamond_balance < estimated_cost:
+    try:
+        await wallet.reserve_diamond(db, current_user, estimated_cost)
+    except wallet.InsufficientBalanceError:
         raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Diamond balansi yetarli emas")
+
+    # Global kunlik "circuit breaker" - fon vazifasi rejalashtirilishidan
+    # OLDIN tekshiriladi, shunda chegaradan oshgan so'rov hech qachon
+    # 202/job yaratmaydi (foydalanuvchi darhol 503 oladi).
+    try:
+        await ai_usage_limiter.reserve_daily_gemini_call(db)
+    except ai_usage_limiter.DailyLimitExceeded:
+        await wallet.release_diamond_reservation(db, current_user, estimated_cost)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Kunlik AI so'rovlar chegarasiga yetildi, birozdan keyin qayta urinib ko'ring",
+        )
 
     job = AiQuizGenerationJob(user_id=current_user.id, status="pending", question_count=question_count)
     db.add(job)
@@ -435,6 +483,7 @@ async def generate_ai_quiz_async(
         topic=topic_clean,
         question_count=question_count,
         topic_category_id=topic_category_id,
+        reserved_diamond_cost=estimated_cost,
     )
 
     return GenerationJobStartedOut(job_id=job.id)
