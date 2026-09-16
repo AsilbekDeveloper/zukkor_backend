@@ -144,7 +144,12 @@ async def test_disconnect_grace_period_expiring_without_reconnect_forfeits_the_d
 
     assert "duel-1" not in duel_engine._active_duels
     assert not duel_engine.is_user_in_active_duel("user-a")
-    assert {"type": "duel_cancelled", "duel_id": "duel-1", "reason": "opponent_left"} in ws_b.sent
+    assert {
+        "type": "duel_cancelled",
+        "duel_id": "duel-1",
+        "reason": "opponent_left",
+        "coins_earned": 0,
+    } in ws_b.sent
 
     async with _test_db() as db:
         duel = await db.get(Duel, "duel-1")

@@ -24,6 +24,8 @@ REFERRAL_BONUS = "referral_bonus"
 SIGNUP_COIN_BONUS = "signup_coin_bonus"
 COIN_COST_PER_QUESTION = "coin_cost_per_question"
 QUESTION_AUTHOR_SHARE_PERCENT = "question_author_share_percent"
+DUEL_STAKE_COINS = "duel_stake_coins"
+DUEL_TAX_PERCENT = "duel_tax_percent"
 
 DEFAULTS: dict[str, int] = {
     DAILY_LOGIN_BONUS: 5,
@@ -33,6 +35,8 @@ DEFAULTS: dict[str, int] = {
     SIGNUP_COIN_BONUS: 50,
     COIN_COST_PER_QUESTION: 1,
     QUESTION_AUTHOR_SHARE_PERCENT: 70,
+    DUEL_STAKE_COINS: 10,
+    DUEL_TAX_PERCENT: 10,
 }
 
 # Foizni ifodalaydigan kalitlar - 0 dan 100 gacha bo'lishi shart. Aks
@@ -40,7 +44,9 @@ DEFAULTS: dict[str, int] = {
 # `payout = (cost * share_percent) // 100` yechilgan narxdan KO'PROQ
 # to'lab yuborishi (>100) yoki savol muallifidan pul YECHIB olishi
 # (<0, chunki `credit_coin`ga manfiy son berilgan bo'lardi) mumkin edi.
-_PERCENT_KEYS: frozenset[str] = frozenset({QUESTION_AUTHOR_SHARE_PERCENT})
+# `DUEL_TAX_PERCENT` ham shu sababdan bu ro'yxatda - 100dan katta bo'lsa
+# `wallet.award_duel_prize` g'olibdan pul yechib olardi.
+_PERCENT_KEYS: frozenset[str] = frozenset({QUESTION_AUTHOR_SHARE_PERCENT, DUEL_TAX_PERCENT})
 
 _DESCRIPTIONS: dict[str, str] = {
     DAILY_LOGIN_BONUS: "Har kuni ilovaga birinchi kirganda beriladigan Coin",
@@ -50,6 +56,8 @@ _DESCRIPTIONS: dict[str, str] = {
     SIGNUP_COIN_BONUS: "Ro'yxatdan o'tganda beriladigan boshlang'ich Coin",
     COIN_COST_PER_QUESTION: "Bitta savolga javob berish o'yinchiga necha Coin turadi",
     QUESTION_AUTHOR_SHARE_PERCENT: "Savol muallifiga tegadigan ulush (foizda, 0-100)",
+    DUEL_STAKE_COINS: "Duel boshlanganda har bir o'yinchidan yechiladigan stavka (Coin)",
+    DUEL_TAX_PERCENT: "Duel yutuq fondidan ushlab qolinadigan (yo'q qilinadigan) soliq (foizda, 0-100)",
 }
 
 

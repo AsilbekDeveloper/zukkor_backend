@@ -231,6 +231,67 @@ async def finalize_diamond_reservation(
     )
 
 
+# --- Duel stavkasi (2026-09-17, anti-farming/inflyatsiya himoyasi) ---
+#
+# UCHALASI HAM FAQAT "coin" valyutasi bilan ishlaydi - `currency`
+# parametri yo'q, ataylab qattiq kodlangan. Duel yutug'i hech qachon
+# Diamond bermasligi shu bilan STRUKTURAVIY ravishda kafolatlanadi (bu
+# funksiyalarni chaqirib Diamond berish shunchaki MUMKIN EMAS), izohga
+# tayanadigan konvensiya emas. Diamond FAQAT `app/routers/ai_quiz.py`
+# orqali (AI-generatsiya narxi sifatida) harakatlanadi.
+
+
+async def charge_duel_stake(db: AsyncSession, user: User, amount: int) -> None:
+    """Anti-Rage-Quit: duel ACTIVE bo'lishi BILANOQ (`duel_engine.start_duel`,
+    savollar tanlanishidan HAM oldin) ikkala o'yinchidan ham stavkani
+    ATOMIK ravishda yechadi (`_record(require_sufficient=True)` - xuddi
+    `charge_for_question_play`dagi kabi, DB darajasidagi qulf orqali
+    poyga holatisiz). Shu bosqichda pul allaqachon "band" - o'yin
+    o'rtasida kimdir chiqib ketsa/aloqasi uzilsa, qaytarish degan alohida
+    mantiq SHART EMAS: chiquvchi shunchaki hech narsa qaytarib olmaydi
+    (`duel_engine.forfeit_duel`ga qarang).
+
+    Yetarli bo'lmasa `InsufficientBalanceError` ko'taradi - chaqiruvchi
+    buni duel UMUMAN boshlanmasligiga aylantiradi. Chaqiruvchi COMMIT
+    qilishi kerak."""
+    await _record(db, user, currency="coin", amount=-abs(amount), reason="duel_stake", require_sufficient=True)
+
+
+async def refund_duel_stake(db: AsyncSession, user: User, amount: int, reason: str = "duel_stake_refund") -> None:
+    """Stavkani TO'LIQ qaytaradi - duel DURANG bilan tugaganda (ikkala
+    tomon ham o'zining tikkan puli bilan qoladi, soliqsiz) yoki duel
+    umuman boshlanmay qolganda (masalan kategoriyada savol topilmadi).
+    Chaqiruvchi COMMIT qilishi kerak."""
+    await credit_coin(db, user, amount, reason)
+
+
+async def award_duel_prize(db: AsyncSession, winner: User, stake_per_player: int, tax_percent: int) -> int:
+    """Anti-Farming/Deflyatsiya: g'olibga yutuq fondini (ikkala
+    o'yinchining stavkasi yig'indisi) TO'LIQ EMAS - `tax_percent` ulush
+    ushlab qolingandan (BURN qilingandan) keyin beradi. Ushlab qolingan
+    qism HECH KIMGA yozilmaydi va hech qanday CurrencyTransaction'da
+    ko'rinmaydi - tizimdagi umumiy Coin miqdoridan butunlay yo'q bo'ladi
+    (aks holda ikkita hamkorlashgan akkaunt bitta doim ATAYLAB yutqazib,
+    bir-biriga cheksiz va bepul Coin ko'chirishi mumkin bo'lardi - bu
+    soliq shu yo'lni yopadi).
+
+    Xuddi shu soliq FORFEIT (raqib chiqib ketgan) holatida ham qo'llanadi
+    (`duel_engine.forfeit_duel`) - aks holda ikkita hamkorlashgan akkaunt
+    "duel boshlab, birortasi ataylab chiqib ketish" orqali soliqni
+    butunlay aylanib o'tishi mumkin bo'lardi.
+
+    G'olibga yozilgan yakuniy Coin miqdorini qaytaradi (Duel natijasi
+    xabarida ko'rsatish uchun). Chaqiruvchi COMMIT qilishi kerak."""
+    pool = stake_per_player * 2
+    tax = (pool * tax_percent) // 100
+    payout = pool - tax
+    await credit_coin(
+        db, winner, payout, "duel_prize",
+        extra={"pool": pool, "tax_percent": tax_percent, "tax": tax},
+    )
+    return payout
+
+
 async def debit_coin(db: AsyncSession, user: User, amount: int, reason: str, extra: dict | None = None) -> None:
     """Coin yechish - balans yetarli bo'lmasa ham manfiyga tushiradi.
     Balans HECH QACHON manfiyga tushmasligi kerak bo'lgan chaqiruvchilar

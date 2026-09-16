@@ -96,7 +96,12 @@ async def test_forfeit_notifies_the_opponent():
     await duel_engine.forfeit_duel("user-a", "duel-1")
 
     assert len(ws.sent) == 1
-    assert ws.sent[0] == {"type": "duel_cancelled", "duel_id": "duel-1", "reason": "opponent_left"}
+    assert ws.sent[0] == {
+        "type": "duel_cancelled",
+        "duel_id": "duel-1",
+        "reason": "opponent_left",
+        "coins_earned": 0,
+    }
 
 
 @pytest.mark.anyio
