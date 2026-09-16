@@ -69,6 +69,13 @@ class User(Base):
     last_daily_bonus_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_first_game_bonus_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Telegram botdagi "Free Get" (2026-09-18, xavfsizlik auditi: haqiqiy
+    # to'lov ulanmaguncha vaqtinchalik bepul Diamond) oxirgi berilgan
+    # payt - `app.services.telegram_bot`da kuniga bittadan ortiq
+    # berilmasligini nazorat qilish uchun, xuddi yuqoridagi kunlik
+    # bonuslar bilan bir xil naqsh.
+    last_free_diamond_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Oxirgi marta "seriyangiz uzilishi mumkin" bildirishnomasi yuborilgan
     # payt (Toshkent mahalliy kuni) - `app.services.streak_reminders`ning
     # fon-vazifasi kuniga bir necha marta tekshiradi, shu ustun bir kunda

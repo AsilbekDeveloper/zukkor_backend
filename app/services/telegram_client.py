@@ -43,3 +43,14 @@ async def answer_callback_query(callback_query_id: str, text: str | None = None)
     if text:
         payload["text"] = text
     await _call("answerCallbackQuery", payload)
+
+
+async def set_webhook(url: str, secret_token: str) -> None:
+    """Telegram'ga qaysi manzilga (`url`) va qaysi maxfiy token bilan
+    (`secret_token` - Telegram buni keyin HAR BIR webhook so'roviga
+    `X-Telegram-Bot-Api-Secret-Token` header'ida qo'shib yuboradi)
+    `Update`larni yuborishini aytadi. `app/main.py` lifespan'da ishga
+    tushganda avtomatik chaqiriladi - qayta-qayta chaqirish xavfsiz
+    (Telegram buni idempotent qiladi, url/token o'zgarmagan bo'lsa
+    hech narsa o'zgarmaydi)."""
+    await _call("setWebhook", {"url": url, "secret_token": secret_token})

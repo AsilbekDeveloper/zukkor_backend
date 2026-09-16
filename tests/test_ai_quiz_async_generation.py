@@ -240,6 +240,56 @@ async def test_generate_async_rejects_when_neither_file_nor_topic(db_session):
 
 
 @pytest.mark.anyio
+async def test_generate_async_counts_a_pending_job_toward_the_daily_limit(db_session, monkeypatch):
+    # 2026-09-18, xavfsizlik auditi: `Category` faqat generatsiya
+    # TUGAGANDA yaratiladi - agar faqat shuni sanasak, foydalanuvchi
+    # ko'p `/generate-async` so'rovini ketma-ket, hech biri tugashini
+    # kutmasdan yuborib, kunlik chegarani chetlab o'tishi mumkin edi.
+    # Hali 'pending' turgan job ham hisoblanishi shart.
+    monkeypatch.setattr(ai_quiz, "MAX_USER_DAILY_AI_GENERATIONS", 1)
+    user = await _create_user(db_session)
+    db_session.add(AiQuizGenerationJob(user_id=user.id, status="pending", question_count=5))
+    await db_session.commit()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await generate_ai_quiz_async(
+            make_request(),
+            BackgroundTasks(),
+            file=None,
+            instruction=None,
+            topic="Tarix",
+            question_count=1,
+            topic_category_id=None,
+            current_user=user,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 429
+
+
+@pytest.mark.anyio
+async def test_generate_async_ignores_a_failed_job_in_the_daily_limit(db_session, monkeypatch):
+    # Muvaffaqiyatsiz urinish "muvaffaqiyatli" hisoblanmasligi kerak -
+    # limitga tegmaydi.
+    monkeypatch.setattr(ai_quiz, "MAX_USER_DAILY_AI_GENERATIONS", 1)
+    user = await _create_user(db_session)
+    db_session.add(AiQuizGenerationJob(user_id=user.id, status="failed", question_count=5))
+    await db_session.commit()
+
+    started = await generate_ai_quiz_async(
+        make_request(),
+        BackgroundTasks(),
+        file=None,
+        instruction=None,
+        topic="Tarix",
+        question_count=1,
+        topic_category_id=None,
+        current_user=user,
+        db=db_session,
+    )
+    assert started.job_id
+
+
+@pytest.mark.anyio
 async def test_get_generation_job_hides_other_users_jobs(db_session):
     owner = await _create_user(db_session, "owner@example.com")
     stranger = await _create_user(db_session, "stranger@example.com")

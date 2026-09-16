@@ -110,6 +110,22 @@ class Settings(BaseSettings):
     # Bo'sh bo'lsa /telegram/webhook hech narsa qilmasdan 200 qaytaradi -
     # Gemini/R2/SMTP kabi, hali sozlanmagan bo'lsa ham ilova ishga tushadi.
     TELEGRAM_BOT_TOKEN: str = ""
+    # Telegram'ning `setWebhook`iga shu qiymat `secret_token` sifatida
+    # yuboriladi (`app/main.py` lifespan, ishga tushganda avtomatik) -
+    # Telegram keyin HAR BIR webhook so'roviga shu tokenni
+    # `X-Telegram-Bot-Api-Secret-Token` header'ida qo'shib yuboradi.
+    # `app/routers/telegram.py` shu header'ni tekshiradi - mos kelmasa
+    # (yoki bu sozlama bo'sh bo'lsa) so'rov 401 bilan rad etiladi (2026-09-18,
+    # xavfsizlik auditi: avval webhook UMUMAN autentifikatsiyasiz edi -
+    # istalgan kishi Telegram'ni butunlay chetlab, to'g'ridan-to'g'ri shu
+    # endpoint'ga soxta so'rov yuborib, o'ziga bepul Diamond berdira olardi).
+    TELEGRAM_WEBHOOK_SECRET: str = ""
+    # Telegram bu manzilga webhook so'rovlarini yuboradi (masalan
+    # "https://<domen>/telegram/webhook") - `TELEGRAM_BOT_TOKEN` va shu
+    # ikkalasi ham to'ldirilgan bo'lsa, ilova ishga tushganda
+    # `setWebhook`ni avtomatik chaqiradi (qayta-qayta chaqirish xavfsiz -
+    # Telegram buni idempotent qiladi), qo'lda buyruq yuborish shart emas.
+    TELEGRAM_WEBHOOK_URL: str = ""
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

@@ -30,6 +30,7 @@ from app.services.document_text import UnsupportedDocumentError, extract_text
 from app.services.push import send_push_to_user
 from app.services.quiz_access import can_access_category, is_friend
 from app.services import ai_usage_limiter, wallet
+from app.services.streak import TASHKENT_OFFSET
 
 router = APIRouter()
 
@@ -41,6 +42,69 @@ DEFAULT_QUESTION_COUNT = 10
 MAX_QUESTION_COUNT = 20
 MAX_TOPIC_LENGTH = 300
 VALID_VISIBILITIES = {"private", "friends", "public"}
+
+# 2026-09-18, xavfsizlik auditi: Diamond balansidan MUSTAQIL, foydalanuvchi
+# darajasidagi yuqori chegara - agar kimdir qandaydir yo'l bilan (masalan
+# Telegram bot orqali) minglab Diamond yig'ib olsa ham, ODDIY bitta
+# foydalanuvchi bir kunda ko'pi bilan shuncha marta MUVAFFAQIYATLI
+# AI-test generatsiya qila oladi. `wallet`/`ai_usage_limiter`dagi boshqa
+# himoyalardan (balans tekshiruvi, global kunlik chegara) MUSTAQIL,
+# qo'shimcha qatlam.
+MAX_USER_DAILY_AI_GENERATIONS = 5
+
+
+def _tashkent_day_start_utc(now_utc: datetime) -> datetime:
+    local_now = now_utc + TASHKENT_OFFSET
+    local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return local_midnight - TASHKENT_OFFSET
+
+
+async def _check_user_daily_ai_generation_limit(db: AsyncSession, user_id: str) -> None:
+    """Har bir MUVAFFAQIYATLI (sinxron YOKI tugagan asinxron) AI-generatsiya
+    aynan bitta `Category` qatori (source='ai_document'/'ai_topic')
+    yaratadi - shuning uchun asosiy hisob shulardan. Bunga QO'SHIMCHA,
+    hali TUGAMAGAN (status='pending') `AiQuizGenerationJob` qatorlari ham
+    sanaladi - aks holda foydalanuvchi `/generate-async`ni bir zumda 6+
+    marta ketma-ket chaqirsa (hech biri hali tugamagan bo'lsa, Category
+    ham hali yo'q), bu tekshiruv poyga holatida chetlab o'tilardi. Ikkalasi
+    QO'SH HISOBLANMAYDI: job tugagach Category paydo bo'ladi, lekin o'sha
+    paytda job endi 'pending' emas (shuning uchun ikkinchi marta
+    hisoblanmaydi); 'failed' bilan tugagan job umuman hisoblanmaydi
+    (muvaffaqiyatsiz urinish limitga tegmaydi).
+
+    Chegaradan oshgan bo'lsa `HTTPException(429)` ko'taradi - Diamond band
+    qilinishidan/Gemini chaqirilishidan OLDIN, eng arzon tekshiruv
+    sifatida."""
+    day_start = _tashkent_day_start_utc(datetime.now(timezone.utc))
+
+    completed_result = await db.execute(
+        select(func.count())
+        .select_from(Category)
+        .where(
+            Category.owner_user_id == user_id,
+            Category.source.in_(("ai_document", "ai_topic")),
+            Category.created_at >= day_start,
+        )
+    )
+    pending_result = await db.execute(
+        select(func.count())
+        .select_from(AiQuizGenerationJob)
+        .where(
+            AiQuizGenerationJob.user_id == user_id,
+            AiQuizGenerationJob.status == "pending",
+            AiQuizGenerationJob.created_at >= day_start,
+        )
+    )
+    total_today = completed_result.scalar_one() + pending_result.scalar_one()
+
+    if total_today >= MAX_USER_DAILY_AI_GENERATIONS:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Kunlik AI yaratish limiti ({MAX_USER_DAILY_AI_GENERATIONS}/"
+                f"{MAX_USER_DAILY_AI_GENERATIONS}) tugadi. Ertaga urinib ko'ring"
+            ),
+        )
 
 def _estimate_input_tokens(text_or_bytes: str | bytes) -> int:
     # Fayl hali matnga ajratilmagan bo'lsa (masalan `/generate-async`ning
@@ -145,6 +209,11 @@ async def generate_ai_quiz(
     instruction_clean = (instruction or "").strip()
     topic_clean = (topic or "").strip()[:MAX_TOPIC_LENGTH]
     has_file = file is not None and bool(file.filename)
+
+    # Foydalanuvchi darajasidagi kunlik chegara - eng arzon tekshiruv,
+    # eng birinchi (Diamond band qilinishidan/Gemini chaqirilishidan OLDIN).
+    await _check_user_daily_ai_generation_limit(db, current_user.id)
+
     # Generatsiyadan OLDIN tekshiramiz - noto'g'ri mavzu-kategoriya bilan
     # Gemini'ga bekorga pul/vaqt sarflanmasin.
     topic_category_name = await _resolve_topic_category(db, topic_category_id)
@@ -429,6 +498,11 @@ async def generate_ai_quiz_async(
     instruction_clean = (instruction or "").strip()
     topic_clean = (topic or "").strip()[:MAX_TOPIC_LENGTH]
     has_file = file is not None and bool(file.filename)
+
+    # Foydalanuvchi darajasidagi kunlik chegara - fon vazifasi
+    # rejalashtirilishidan OLDIN (`generate_ai_quiz`dagi bilan bir xil).
+    await _check_user_daily_ai_generation_limit(db, current_user.id)
+
     # Generatsiya boshlanishidan OLDIN tekshiramiz - noto'g'ri mavzu-kategoriya
     # bilan fon vazifasi behuda ishga tushmasin.
     await _resolve_topic_category(db, topic_category_id)

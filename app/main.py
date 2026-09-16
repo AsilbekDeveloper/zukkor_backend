@@ -43,7 +43,7 @@ from app.routers import (
     users,
     wallet,
 )
-from app.services import economy_config
+from app.services import economy_config, telegram_client
 from app.services.streak_reminders import streak_reminder_loop
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -93,6 +93,12 @@ def _warn_about_missing_production_config() -> None:
         missing.append("SMTP_USERNAME (parolni tiklash email'i yuborilmaydi)")
     if not settings.TELEGRAM_BOT_TOKEN:
         missing.append("TELEGRAM_BOT_TOKEN (Diamond sotib olish kanali ishlamaydi)")
+    elif not settings.TELEGRAM_WEBHOOK_SECRET:
+        # Bot tokeni bor, lekin webhook maxfiy tokeni yo'q - bu holda
+        # `/telegram/webhook` HAMMA so'rovni 401 bilan rad etadi (2026-09-18,
+        # xavfsizlik auditi - ataylab "fail closed": webhook'ni himoyasiz
+        # ochiq qoldirishdan ko'ra, butunlay ishlamay turgani xavfsizroq).
+        missing.append("TELEGRAM_WEBHOOK_SECRET (webhook HAMMA so'rovni 401 bilan rad etadi)")
 
     if missing:
         logger.warning("Production muhitida quyidagi sozlamalar bo'sh: %s", "; ".join(missing))
@@ -107,6 +113,12 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as db:
         await economy_config.seed_defaults(db)
+    if settings.TELEGRAM_BOT_TOKEN and settings.TELEGRAM_WEBHOOK_URL and settings.TELEGRAM_WEBHOOK_SECRET:
+        # Qayta-qayta chaqirish xavfsiz (Telegram buni idempotent qiladi) -
+        # webhook manzili/maxfiy tokeni har doim shu deploy'dagi joriy
+        # qiymatlar bilan sinxron turishi uchun har ishga tushishda
+        # qayta tasdiqlanadi.
+        await telegram_client.set_webhook(settings.TELEGRAM_WEBHOOK_URL, settings.TELEGRAM_WEBHOOK_SECRET)
     expiry_task = asyncio.create_task(duel_ws.expire_duel_invites_loop())
     duel_rate_limit_cleanup_task = asyncio.create_task(duel_ws.cleanup_stale_rate_limit_entries_loop())
     notification_cleanup_task = asyncio.create_task(notifications.cleanup_old_notifications_loop())

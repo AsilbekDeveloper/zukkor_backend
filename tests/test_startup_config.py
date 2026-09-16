@@ -46,11 +46,33 @@ def test_does_not_warn_when_everything_is_configured(monkeypatch, caplog):
     monkeypatch.setattr(settings, "R2_BUCKET", "bucket")
     monkeypatch.setattr(settings, "SMTP_USERNAME", "user@example.com")
     monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "secret")
 
     with caplog.at_level(logging.WARNING, logger="zukkor.startup"):
         _warn_about_missing_production_config()
 
     assert caplog.records == []
+
+
+def test_warns_when_bot_token_set_but_webhook_secret_missing(monkeypatch, caplog):
+    # 2026-09-18, xavfsizlik auditi: bot tokeni bor, lekin webhook maxfiy
+    # tokeni yo'q bo'lsa - bu holatda `/telegram/webhook` HAMMA so'rovni
+    # 401 bilan rad etadi, operator buni bilishi kerak.
+    monkeypatch.setattr(settings, "ENVIRONMENT", "production")
+    monkeypatch.setattr(settings, "SENTRY_DSN", "https://example.sentry.io/1")
+    monkeypatch.setattr(settings, "GEMINI_API_KEY", "key")
+    monkeypatch.setattr(settings, "R2_ACCOUNT_ID", "id")
+    monkeypatch.setattr(settings, "R2_ACCESS_KEY_ID", "key")
+    monkeypatch.setattr(settings, "R2_BUCKET", "bucket")
+    monkeypatch.setattr(settings, "SMTP_USERNAME", "user@example.com")
+    monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "")
+
+    with caplog.at_level(logging.WARNING, logger="zukkor.startup"):
+        _warn_about_missing_production_config()
+
+    assert len(caplog.records) == 1
+    assert "TELEGRAM_WEBHOOK_SECRET" in caplog.records[0].message
 
 
 def test_warns_about_only_the_specific_missing_setting(monkeypatch, caplog):
@@ -62,6 +84,7 @@ def test_warns_about_only_the_specific_missing_setting(monkeypatch, caplog):
     monkeypatch.setattr(settings, "R2_BUCKET", "bucket")
     monkeypatch.setattr(settings, "SMTP_USERNAME", "")
     monkeypatch.setattr(settings, "TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setattr(settings, "TELEGRAM_WEBHOOK_SECRET", "secret")
 
     with caplog.at_level(logging.WARNING, logger="zukkor.startup"):
         _warn_about_missing_production_config()

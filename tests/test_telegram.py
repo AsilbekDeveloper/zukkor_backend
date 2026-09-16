@@ -17,7 +17,7 @@ from app.models.telegram_link_code import TelegramLinkCode
 from app.models.user import User
 from app.routers.telegram import link_telegram_account
 from app.schemas.telegram import TelegramLinkRequest
-from app.services import telegram_bot
+from app.services import economy_config, telegram_bot
 
 
 async def _create_user(db, email: str, **kwargs) -> User:
@@ -148,53 +148,81 @@ async def test_relinking_a_telegram_account_unlinks_it_from_the_previous_owner(d
     assert old_owner.telegram_user_id is None
 
 
-# --- Bot "Free Get" Diamond purchase (callback_query) ---
+# --- Bot "Free Get" Diamond (daily_free_get callback_query) - 2026-09-18,
+# xavfsizlik auditi: avval CHEKSIZ edi (har bosishda kredit qilinardi),
+# endi foydalanuvchiga kuniga FAQAT BIR MARTA, FIKSIRLANGAN
+# (`economy_config.FREE_GET_DIAMOND_AMOUNT`) miqdorda beriladi. ---
+
+
+def _daily_free_get_update(telegram_user_id: int = 777, callback_query_id: str = "cb1") -> dict:
+    return {
+        "callback_query": {
+            "id": callback_query_id,
+            "from": {"id": telegram_user_id},
+            "message": {"chat": {"id": telegram_user_id}},
+            "data": "daily_free_get",
+        }
+    }
 
 
 @pytest.mark.anyio
-async def test_buy_callback_credits_diamond_for_a_linked_user(db_session):
+async def test_daily_free_get_credits_the_configured_amount_for_a_linked_user(db_session):
     user = await _create_user(db_session, "a@example.com", telegram_user_id=777, diamond_balance=10)
     await db_session.commit()
 
-    await telegram_bot.handle_update(
-        db_session,
-        {
-            "callback_query": {
-                "id": "cb1",
-                "from": {"id": 777},
-                "message": {"chat": {"id": 777}},
-                "data": "buy:small",
-            }
-        },
-    )
+    await telegram_bot.handle_update(db_session, _daily_free_get_update())
 
-    assert user.diamond_balance == 10 + 50
+    assert user.diamond_balance == 10 + economy_config.DEFAULTS[economy_config.FREE_GET_DIAMOND_AMOUNT]
     tx = (await db_session.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))).scalar_one()
     assert tx.currency == "diamond"
-    assert tx.amount == 50
-    assert tx.reason == "purchase"
+    assert tx.amount == economy_config.DEFAULTS[economy_config.FREE_GET_DIAMOND_AMOUNT]
+    assert tx.reason == "daily_free_get"
+    assert user.last_free_diamond_at is not None
 
 
 @pytest.mark.anyio
-async def test_buy_callback_for_unlinked_telegram_user_does_not_crash_or_credit_anyone(db_session):
-    await telegram_bot.handle_update(
-        db_session,
-        {
-            "callback_query": {
-                "id": "cb1",
-                "from": {"id": 4242},
-                "message": {"chat": {"id": 4242}},
-                "data": "buy:small",
-            }
-        },
-    )
+async def test_daily_free_get_for_unlinked_telegram_user_does_not_crash_or_credit_anyone(db_session):
+    await telegram_bot.handle_update(db_session, _daily_free_get_update(telegram_user_id=4242))
 
     assert (await db_session.execute(select(CurrencyTransaction))).scalars().all() == []
 
 
 @pytest.mark.anyio
-async def test_buy_callback_with_unknown_package_id_does_not_crash(db_session):
-    user = await _create_user(db_session, "a@example.com", telegram_user_id=777)
+async def test_daily_free_get_is_rejected_on_a_second_claim_the_same_day(db_session):
+    user = await _create_user(db_session, "a@example.com", telegram_user_id=777, diamond_balance=0)
+    await db_session.commit()
+
+    await telegram_bot.handle_update(db_session, _daily_free_get_update())
+    first_balance = user.diamond_balance
+    assert first_balance > 0
+
+    await telegram_bot.handle_update(db_session, _daily_free_get_update(callback_query_id="cb2"))
+
+    # Balans ikkinchi urinishdan keyin o'zgarmagan - faqat bitta ledger
+    # yozuvi bor.
+    assert user.diamond_balance == first_balance
+    rows = (await db_session.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))).scalars().all()
+    assert len(rows) == 1
+
+
+@pytest.mark.anyio
+async def test_daily_free_get_is_allowed_again_on_a_new_day(db_session):
+    user = await _create_user(db_session, "a@example.com", telegram_user_id=777, diamond_balance=0)
+    # "Kecha" allaqachon olingan deb belgilaymiz.
+    user.last_free_diamond_at = datetime.now(timezone.utc) - timedelta(days=1, hours=1)
+    await db_session.commit()
+
+    await telegram_bot.handle_update(db_session, _daily_free_get_update())
+
+    assert user.diamond_balance == economy_config.DEFAULTS[economy_config.FREE_GET_DIAMOND_AMOUNT]
+
+
+@pytest.mark.anyio
+async def test_stale_buy_callback_never_credits_anyone(db_session):
+    # Eski (2026-09-18'dan oldingi) "Bepul olish" tugmalari foydalanuvchi
+    # chatida eski xabar sifatida saqlanib qolgan bo'lishi mumkin - bosilsa
+    # endi hech narsa kredit qilmasligi kerak.
+    user = await _create_user(db_session, "a@example.com", telegram_user_id=777, diamond_balance=0)
     await db_session.commit()
 
     await telegram_bot.handle_update(
@@ -204,9 +232,10 @@ async def test_buy_callback_with_unknown_package_id_does_not_crash(db_session):
                 "id": "cb1",
                 "from": {"id": 777},
                 "message": {"chat": {"id": 777}},
-                "data": "buy:nonexistent",
+                "data": "buy:small",
             }
         },
     )
 
     assert user.diamond_balance == 0
+    assert (await db_session.execute(select(CurrencyTransaction))).scalars().all() == []

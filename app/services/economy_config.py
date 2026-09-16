@@ -26,6 +26,7 @@ COIN_COST_PER_QUESTION = "coin_cost_per_question"
 QUESTION_AUTHOR_SHARE_PERCENT = "question_author_share_percent"
 DUEL_STAKE_COINS = "duel_stake_coins"
 DUEL_TAX_PERCENT = "duel_tax_percent"
+FREE_GET_DIAMOND_AMOUNT = "free_get_diamond_amount"
 
 DEFAULTS: dict[str, int] = {
     DAILY_LOGIN_BONUS: 5,
@@ -37,6 +38,13 @@ DEFAULTS: dict[str, int] = {
     QUESTION_AUTHOR_SHARE_PERCENT: 70,
     DUEL_STAKE_COINS: 10,
     DUEL_TAX_PERCENT: 10,
+    # ~39 Diamond - joriy narxlash formulasi bo'yicha o'rtacha bitta
+    # mavzudan AI-test generatsiyasining taxminiy narxi (10 savol,
+    # ~500 kirish tokeni) - 5ga ko'paytirilgan va yaxlitlangan. Haqiqiy
+    # narx generatsiyadan-generatsiyaga farq qiladi (hujjat hajmi,
+    # savol soni), shuning uchun bu ANIQ emas, TAXMINIY kalibrlash -
+    # kerak bo'lsa admin panelidan osongina o'zgartiriladi.
+    FREE_GET_DIAMOND_AMOUNT: 200,
 }
 
 # Foizni ifodalaydigan kalitlar - 0 dan 100 gacha bo'lishi shart. Aks
@@ -58,6 +66,7 @@ _DESCRIPTIONS: dict[str, str] = {
     QUESTION_AUTHOR_SHARE_PERCENT: "Savol muallifiga tegadigan ulush (foizda, 0-100)",
     DUEL_STAKE_COINS: "Duel boshlanganda har bir o'yinchidan yechiladigan stavka (Coin)",
     DUEL_TAX_PERCENT: "Duel yutuq fondidan ushlab qolinadigan (yo'q qilinadigan) soliq (foizda, 0-100)",
+    FREE_GET_DIAMOND_AMOUNT: "Telegram botda kuniga bir marta beriladigan bepul Diamond miqdori",
 }
 
 

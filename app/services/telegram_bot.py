@@ -1,8 +1,17 @@
 """Telegram bot'ning ish mantig'i - webhook orqali kelgan `Update`larni
-qayta ishlaydi. Diamond sotib olish hozircha "Free Get" - haqiqiy
-to'lov (Payme/Click) ulanmagan, tugma bosilsa Diamond DARHOL, bepul
-qo'shiladi - [[ai_cost_architecture]], foydalanuvchining aniq ko'rsatmasi
-bilan ("shunchaki free get qilib qo'y, keyinroq Pay'ga almashtiramiz")."""
+qayta ishlaydi. Diamond sotib olish hozircha "Free Get" - haqiqiy to'lov
+(Payme/Click) ulanmagan, [[ai_cost_architecture]].
+
+2026-09-18, biznes qaror o'zgardi: MVP bosqichida foydalanuvchilar ilovani
+(marketing uchun) bemalol sinab ko'ra olishi kerak - shuning uchun "Free
+Get" BUTUNLAY o'chirilmaydi, lekin xarajatni jilovlash uchun qat'iy
+kunlik limit bilan: foydalanuvchi kuniga FAQAT BIR MARTA, FIKSIRLANGAN
+miqdorda (`economy_config.FREE_GET_DIAMOND_AMOUNT`, taxminan 5 ta AI-test
+generatsiyasiga yetarli) bepul Diamond olishi mumkin - eski "har bir
+paket alohida, cheklovsiz bosiladigan" tugmalar o'rniga BITTA "Bugungi
+bepul Diamond" tugmasi. Eski `buy:*` callback'lari (foydalanuvchi
+chatida ESKI xabar saqlanib qolgan bo'lishi mumkin) endi hech narsa
+kredit qilmaydi, faqat yangi buyruqqa yo'naltiradi."""
 
 import logging
 import secrets
@@ -13,26 +22,40 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.telegram_link_code import TelegramLinkCode
 from app.models.user import User
-from app.services import telegram_client, wallet
+from app.services import economy_config, telegram_client, wallet
+from app.services.streak import TASHKENT_OFFSET
 
 logger = logging.getLogger("zukkor.telegram")
 
 _LINK_CODE_TTL = timedelta(minutes=10)
 
-# Narxlash/paketlar hali belgilanmagan (Payme/Click integratsiyasi bilan
-# birga keladi) - bular FAQAT "Free Get" bosqichi uchun ko'rsatiladigan,
-# osongina o'zgartiriladigan vaqtinchalik son(lar). Haqiqiy to'lov
-# ulanganda shu ro'yxat + tugma matni ("Free Get" -> "Sotib olish")
-# almashtiriladi, qolgan mantiq (callback_data, credit_diamond) o'zgarmaydi.
+# Kelajakdagi (Payme/Click ulangandan keyingi) haqiqiy narxlash paketlari -
+# hozircha faqat "tez orada" sifatida ko'rsatiladi, hech biri hozir sotib
+# olinmaydi/bepul berilmaydi (buni "Bugungi bepul Diamond" tugmasi
+# almashtiradi, pastga qarang).
 DIAMOND_PACKAGES = [
     {"id": "small", "diamonds": 50, "label": "50 \U0001f48e"},
     {"id": "medium", "diamonds": 150, "label": "150 \U0001f48e"},
     {"id": "large", "diamonds": 500, "label": "500 \U0001f48e"},
 ]
 
+_DAILY_FREE_GET_CALLBACK_DATA = "daily_free_get"
+
 
 def _generate_numeric_code() -> str:
     return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _tashkent_date(dt: datetime):
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (dt + TASHKENT_OFFSET).date()
+
+
+def _already_claimed_free_diamond_today(user: User) -> bool:
+    if user.last_free_diamond_at is None:
+        return False
+    return _tashkent_date(user.last_free_diamond_at) == _tashkent_date(datetime.now(timezone.utc))
 
 
 async def _find_user_by_telegram_id(db: AsyncSession, telegram_user_id: int) -> User | None:
@@ -103,16 +126,20 @@ async def _handle_link_command(db: AsyncSession, telegram_user_id: int, chat_id:
     )
 
 
-async def _send_diamond_menu(chat_id: int, user: User) -> None:
-    buttons = [
-        [{"text": f"Bepul olish - {pkg['label']}", "callback_data": f"buy:{pkg['id']}"}] for pkg in DIAMOND_PACKAGES
-    ]
+async def _send_diamond_menu(db: AsyncSession, chat_id: int, user: User) -> None:
+    free_amount = await economy_config.get_int(db, economy_config.FREE_GET_DIAMOND_AMOUNT)
+    package_lines = "\n".join(f"• {pkg['label']} — tez orada" for pkg in DIAMOND_PACKAGES)
     await telegram_client.send_message(
         chat_id,
         f"Joriy balansingiz: <b>{user.diamond_balance} \U0001f48e</b>\n\n"
-        "Diamond sotib olish hozircha bepul sinov rejimida (to'lov tizimi "
-        "tez orada qo'shiladi) - xohlagan paketni bosing:",
-        reply_markup={"inline_keyboard": buttons},
+        f"MVP bosqichida kuniga bir marta <b>BEPUL {free_amount} \U0001f48e</b> olishingiz "
+        "mumkin (taxminan 5 ta AI-test generatsiyasiga yetarli):\n\n"
+        f"Pullik paketlar (tez orada):\n{package_lines}",
+        reply_markup={
+            "inline_keyboard": [
+                [{"text": f"Bugungi bepul {free_amount} \U0001f48e ni olish", "callback_data": _DAILY_FREE_GET_CALLBACK_DATA}]
+            ]
+        },
     )
 
 
@@ -124,36 +151,44 @@ async def _handle_diamond_command(db: AsyncSession, telegram_user_id: int, chat_
             "Hisobingiz hali ulanmagan. Ulash uchun /link yozing.",
         )
         return
-    await _send_diamond_menu(chat_id, user)
+    await _send_diamond_menu(db, chat_id, user)
 
 
-async def _handle_buy_callback(
-    db: AsyncSession, telegram_user_id: int, chat_id: int, callback_query_id: str, package_id: str
+async def _handle_daily_free_get_callback(
+    db: AsyncSession, telegram_user_id: int, chat_id: int, callback_query_id: str
 ) -> None:
-    package = next((p for p in DIAMOND_PACKAGES if p["id"] == package_id), None)
-    if package is None:
-        await telegram_client.answer_callback_query(callback_query_id, "Noto'g'ri paket")
-        return
-
     user = await _find_user_by_telegram_id(db, telegram_user_id)
     if user is None:
         await telegram_client.answer_callback_query(callback_query_id, "Avval /link orqali hisobni ulang")
         return
 
+    if _already_claimed_free_diamond_today(user):
+        await telegram_client.answer_callback_query(callback_query_id, "Bugungi limit tugadi")
+        await telegram_client.send_message(chat_id, "Bugungi bepul Diamondlarni olib bo'ldingiz. Ertaga yana kiring!")
+        return
+
+    amount = await economy_config.get_int(db, economy_config.FREE_GET_DIAMOND_AMOUNT)
+    user.last_free_diamond_at = datetime.now(timezone.utc)
     await wallet.credit_diamond(
-        db,
-        user,
-        package["diamonds"],
-        "purchase",
-        extra={"package_id": package_id, "channel": "telegram_bot", "payment": "free_get_placeholder"},
+        db, user, amount, "daily_free_get", extra={"channel": "telegram_bot"},
     )
     await db.commit()
 
     await telegram_client.answer_callback_query(callback_query_id, "Qo'shildi!")
     await telegram_client.send_message(
         chat_id,
-        f"✅ {package['diamonds']} \U0001f48e qo'shildi!\nJoriy balans: {user.diamond_balance} \U0001f48e",
+        f"✅ {amount} \U0001f48e qo'shildi!\nJoriy balans: {user.diamond_balance} \U0001f48e",
     )
+
+
+async def _handle_stale_buy_callback(chat_id: int, callback_query_id: str) -> None:
+    """Eski (2026-09-18'dan oldingi) "Bepul olish - X" tugmalari
+    foydalanuvchi chatida ESKI xabar sifatida saqlanib qolgan bo'lishi
+    mumkin - Telegram eski xabarlardagi tugmalarni avtomatik
+    o'chirmaydi. Bunday tugma bosilsa endi HECH NARSA kredit qilmaydi -
+    faqat yangi (kunlik limitli) oqimga yo'naltiradi."""
+    await telegram_client.answer_callback_query(callback_query_id, "Bu tugma endi faol emas")
+    await telegram_client.send_message(chat_id, "Bu tugma endi eskirgan - bepul Diamond olish uchun /diamond yozing.")
 
 
 async def handle_update(db: AsyncSession, update: dict) -> None:
@@ -196,8 +231,10 @@ async def handle_update(db: AsyncSession, update: dict) -> None:
             if telegram_user_id is None or chat_id is None or callback_query_id is None:
                 return
 
-            if data.startswith("buy:"):
-                await _handle_buy_callback(db, telegram_user_id, chat_id, callback_query_id, data.removeprefix("buy:"))
+            if data == _DAILY_FREE_GET_CALLBACK_DATA:
+                await _handle_daily_free_get_callback(db, telegram_user_id, chat_id, callback_query_id)
+            elif data.startswith("buy:"):
+                await _handle_stale_buy_callback(chat_id, callback_query_id)
             else:
                 await telegram_client.answer_callback_query(callback_query_id)
     except Exception:

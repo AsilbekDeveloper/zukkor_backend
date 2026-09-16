@@ -1,9 +1,11 @@
+import hmac
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
 from app.models.telegram_link_code import TelegramLinkCode
@@ -13,17 +15,34 @@ from app.services import telegram_bot, telegram_client
 
 router = APIRouter()
 
+_SECRET_TOKEN_HEADER = "x-telegram-bot-api-secret-token"
+
 
 @router.post(
     "/webhook",
     status_code=status.HTTP_200_OK,
     summary="Telegram bot webhook",
-    description="Telegram Bot API'dan `Update` obyektlarini qabul qiladi - "
-    "autentifikatsiyasiz (Telegram'ning o'zi chaqiradi). Har doim 200 "
-    "qaytaradi (ichkarida xato bo'lsa ham) - aks holda Telegram webhook'ni "
-    "qayta-qayta urinib, keraksiz yukni oshiradi.",
+    description="Telegram Bot API'dan `Update` obyektlarini qabul qiladi. "
+    "`X-Telegram-Bot-Api-Secret-Token` header'i `settings.TELEGRAM_WEBHOOK_SECRET` "
+    "bilan mos kelishi SHART (Telegram buni `setWebhook`da o'rnatilgan "
+    "`secret_token`dan avtomatik qo'shadi) - aks holda 401. Header mos "
+    "kelgandan KEYIN har doim 200 qaytaradi (ichkarida xato bo'lsa ham) - "
+    "aks holda Telegram webhook'ni qayta-qayta urinib, keraksiz yukni oshiradi.",
 )
 async def telegram_webhook(request: Request, db: AsyncSession = Depends(get_db)):
+    # 2026-09-18, xavfsizlik auditi: avval bu endpoint TO'LIQ
+    # autentifikatsiyasiz edi - istalgan kishi Telegram'ni butunlay
+    # chetlab, to'g'ridan-to'g'ri shu manzilga soxta `Update` (masalan
+    # "Diamond sotib olindi" callback'i) yuborishi mumkin edi. Doim
+    # (bo'sh bo'lsa ham) `hmac.compare_digest` bilan solishtiramiz -
+    # `TELEGRAM_WEBHOOK_SECRET` sozlanmagan bo'lsa "fail closed": HAMMA
+    # so'rov 401 oladi, webhook himoyasiz ochiq QOLMAYDI.
+    received_secret = request.headers.get(_SECRET_TOKEN_HEADER, "")
+    if not settings.TELEGRAM_WEBHOOK_SECRET or not hmac.compare_digest(
+        received_secret, settings.TELEGRAM_WEBHOOK_SECRET
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Noto'g'ri webhook maxfiy tokeni")
+
     update = await request.json()
     await telegram_bot.handle_update(db, update)
     return {"ok": True}

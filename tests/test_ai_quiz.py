@@ -336,6 +336,123 @@ async def test_generate_ai_quiz_returns_503_and_refunds_when_the_daily_gemini_li
     assert user.diamond_balance == 100
 
 
+# --- Foydalanuvchi darajasidagi kunlik AI-generatsiya chegarasi
+# (2026-09-18, xavfsizlik auditi: Diamond balansidan MUSTAQIL - hatto
+# minglab Diamondi bo'lgan foydalanuvchi ham bir kunda ko'pi bilan
+# `MAX_USER_DAILY_AI_GENERATIONS` marta muvaffaqiyatli generatsiya
+# qila oladi) ---
+
+
+@pytest.mark.anyio
+async def test_generate_ai_quiz_allows_up_to_the_daily_limit_then_blocks(db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
+    monkeypatch.setattr(ai_quiz, "MAX_USER_DAILY_AI_GENERATIONS", 2)
+    user = await _create_user(db_session)
+
+    for _ in range(2):
+        await generate_ai_quiz(
+            request=make_request(),
+            file=_upload("kitob.txt", b"matn"),
+            instruction="x",
+            topic=None,
+            question_count=1,
+            topic_category_id=None,
+            current_user=user,
+            db=db_session,
+        )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await generate_ai_quiz(
+            request=make_request(),
+            file=_upload("kitob.txt", b"matn"),
+            instruction="x",
+            topic=None,
+            question_count=1,
+            topic_category_id=None,
+            current_user=user,
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 429
+    assert "2/2" in exc_info.value.detail
+
+
+@pytest.mark.anyio
+async def test_generate_ai_quiz_daily_limit_is_per_user(db_session, monkeypatch):
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
+    monkeypatch.setattr(ai_quiz, "MAX_USER_DAILY_AI_GENERATIONS", 1)
+    user_a = await _create_user(db_session, "limit_a@example.com")
+    user_b = await _create_user(db_session, "limit_b@example.com")
+
+    await generate_ai_quiz(
+        request=make_request(), file=_upload("a.txt", b"matn"), instruction="x", topic=None,
+        question_count=1, topic_category_id=None, current_user=user_a, db=db_session,
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        await generate_ai_quiz(
+            request=make_request(), file=_upload("a2.txt", b"matn"), instruction="x", topic=None,
+            question_count=1, topic_category_id=None, current_user=user_a, db=db_session,
+        )
+    assert exc_info.value.status_code == 429
+
+    # Boshqa foydalanuvchi hali ta'sirlanmagan - o'z chegarasidan hali foydalanmagan.
+    result_b = await generate_ai_quiz(
+        request=make_request(), file=_upload("b.txt", b"matn"), instruction="x", topic=None,
+        question_count=1, topic_category_id=None, current_user=user_b, db=db_session,
+    )
+    assert result_b.question_count == 1
+
+
+@pytest.mark.anyio
+async def test_generate_ai_quiz_daily_limit_does_not_charge_diamond_or_call_gemini(db_session, monkeypatch):
+    calls = {"count": 0}
+
+    async def _tracked_generate(text, instruction, question_count):
+        calls["count"] += 1
+        return await _fake_generate_questions(text, instruction, question_count)
+
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _tracked_generate)
+    monkeypatch.setattr(ai_quiz, "MAX_USER_DAILY_AI_GENERATIONS", 1)
+    user = await _create_user(db_session)
+    user.diamond_balance = 100_000
+
+    await generate_ai_quiz(
+        request=make_request(), file=_upload("a.txt", b"matn"), instruction="x", topic=None,
+        question_count=1, topic_category_id=None, current_user=user, db=db_session,
+    )
+    balance_after_first = user.diamond_balance
+    assert calls["count"] == 1
+
+    with pytest.raises(HTTPException) as exc_info:
+        await generate_ai_quiz(
+            request=make_request(), file=_upload("a2.txt", b"matn"), instruction="x", topic=None,
+            question_count=1, topic_category_id=None, current_user=user, db=db_session,
+        )
+    assert exc_info.value.status_code == 429
+    # Gemini umuman chaqirilmadi, Diamond o'zgarmadi - eng arzon tekshiruv
+    # birinchi bo'lib ishladi.
+    assert calls["count"] == 1
+    assert user.diamond_balance == balance_after_first
+
+
+@pytest.mark.anyio
+async def test_generate_ai_quiz_daily_limit_ignores_manual_quizzes(db_session, monkeypatch):
+    # `create_manual_quiz` ham `Category` yaratadi, lekin source='manual' -
+    # AI-generatsiya kunlik chegarasiga umuman tegishli emas.
+    monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
+    monkeypatch.setattr(ai_quiz, "MAX_USER_DAILY_AI_GENERATIONS", 1)
+    user = await _create_user(db_session)
+
+    for i in range(5):
+        await create_manual_quiz(payload=_manual_payload(f"Qo'lda {i}"), current_user=user, db=db_session)
+
+    # Hali birorta AI-generatsiya qilinmagan - limitga tegmagan.
+    result = await generate_ai_quiz(
+        request=make_request(), file=_upload("a.txt", b"matn"), instruction="x", topic=None,
+        question_count=1, topic_category_id=None, current_user=user, db=db_session,
+    )
+    assert result.question_count == 1
+
+
 @pytest.mark.anyio
 async def test_list_my_ai_quizzes_only_returns_own_active_quizzes(db_session, monkeypatch):
     monkeypatch.setattr("app.routers.ai_quiz.generate_questions", _fake_generate_questions)
