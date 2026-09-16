@@ -95,13 +95,38 @@ class CategoryAdmin(ModelView, model=Category):
 
 
 class QuestionAdmin(ModelView, model=Question):
+    """"Kill Switch" - AI (avtomatik moderatsiya YOKI AI-generatsiya orqali)
+    tasdiqlagan savol keyinchalik yomon/noto'g'ri ekani ma'lum bo'lsa, admin
+    buni bevosita shu yerdan tuzatadi. `can_edit`/`can_delete`ni ATAYLAB
+    ANIQ (explicit) `True` deb yozamiz - SQLAdmin'ning standart qiymati
+    ham `True`, lekin bu yerda ANIQ yozib qo'yish kelajakda kimdir
+    boshqa admin view'larga (masalan `QuestionSubmissionAdmin`) qarab
+    "ehtiyot shart" deb bu yerni ham `False` qilib qo'yishining oldini
+    oladi - savol ustidan qo'lda nazorat ATAYLAB doim ochiq turishi
+    kerak (2026-09-19, sifat auditi)."""
+
     name = "Savol"
     name_plural = "Savollar"
     icon = "fa-solid fa-circle-question"
 
-    column_list = [Question.id, Question.category, Question.question_text, Question.is_active, Question.created_by_user_id]
+    can_edit = True
+    can_delete = True
+
+    column_list = [
+        Question.id,
+        Question.category,
+        Question.question_text,
+        Question.is_active,
+        Question.created_by_user_id,
+        # Sof hisoblangan ustun (`ReportedQuestion` soni) -
+        # `app/models/reported_question.py`dagi `column_property`ga
+        # qarang. Admin bu yerdan qaysi savol necha marta report
+        # qilinganini, `is_active=False`ga avtomatik o'tganini bir
+        # qarashda ko'radi.
+        Question.report_count,
+    ]
     column_searchable_list = [Question.question_text]
-    column_sortable_list = [Question.id, Question.is_active]
+    column_sortable_list = [Question.id, Question.is_active, Question.report_count]
     form_columns = [Question.category, Question.question_text, Question.is_active]
 
     async def scaffold_form(self):
@@ -157,16 +182,28 @@ class ReportedQuestionAdmin(ModelView, model=ReportedQuestion):
 
 
 class QuestionSubmissionAdmin(ModelView, model=QuestionSubmission):
-    """Faqat kuzatish uchun - foydalanuvchi yuborgan savollar AI tomonidan
-    so'rov paytida sinxron tasdiqlanadi/rad etiladi, admin qo'lda hech
-    narsani o'zgartirmaydi (shuning uchun to'liq read-only)."""
+    """Asosan kuzatish uchun - foydalanuvchi yuborgan savollar AI tomonidan
+    so'rov paytida sinxron tasdiqlanadi/rad etiladi, admin navbatda
+    KUTMAYDI. LEKIN (2026-09-19, sifat auditi - "AI galyutsinatsiyasi"
+    himoyasi #2, False Negative) - AI rad etgan taklifga foydalanuvchi
+    `POST /questions/submissions/{id}/appeal` orqali e'tiroz bildirsa,
+    status `'pending_manual_review'`ga o'tadi va ENDI admin buni shu
+    yerdan QO'LDA ko'rib chiqishi, kerak bo'lsa matnini/variantlarini
+    tuzatib, `status`ni `'approved'`ga o'zgartirishi mumkin - shunda
+    haqiqiy `Question` qatori AVTOMATIK yaratiladi (pastdagi
+    `on_model_change`ga qarang), xuddi AI o'zi tasdiqlagandek.
+
+    `can_delete = False` ATAYLAB - bu jadval audit/tarix hujjati
+    (`QuestionSubmission` docstring'iga qarang), allaqachon yaratilgan
+    haqiqiy `Question`ni o'chirish/o'zgartirish kerak bo'lsa buning
+    o'rni bu yer emas, `QuestionAdmin` ("Kill Switch")."""
 
     name = "Savol taklifi"
     name_plural = "Foydalanuvchi savol takliflari"
     icon = "fa-solid fa-inbox"
 
     can_create = False
-    can_edit = False
+    can_edit = True
     can_delete = False
 
     column_list = [
@@ -176,11 +213,92 @@ class QuestionSubmissionAdmin(ModelView, model=QuestionSubmission):
         QuestionSubmission.status,
         QuestionSubmission.resulting_category,
         QuestionSubmission.ai_feedback,
+        QuestionSubmission.appealed_at,
         QuestionSubmission.created_at,
     ]
     column_searchable_list = [QuestionSubmission.question_text]
-    column_sortable_list = [QuestionSubmission.id, QuestionSubmission.status, QuestionSubmission.created_at]
+    column_sortable_list = [
+        QuestionSubmission.id,
+        QuestionSubmission.status,
+        QuestionSubmission.appealed_at,
+        QuestionSubmission.created_at,
+    ]
+    # Admin bir bosishda faqat e'tiroz bildirilgan (inson ko'rib chiqishini
+    # kutayotgan) takliflarni filtrlab ko'ra oladi.
+    column_filters = [QuestionSubmission.status]
     column_default_sort = [(QuestionSubmission.created_at, True)]
+    form_columns = [
+        QuestionSubmission.question_text,
+        QuestionSubmission.resulting_category,
+        QuestionSubmission.status,
+    ]
+
+    async def scaffold_form(self):
+        form_class = await super().scaffold_form()
+        form_class.option_1 = StringField("1-variant", validators=[DataRequired()])
+        form_class.option_2 = StringField("2-variant", validators=[DataRequired()])
+        form_class.option_3 = StringField("3-variant", validators=[DataRequired()])
+        form_class.option_4 = StringField("4-variant", validators=[DataRequired()])
+        form_class.correct_option = SelectField(
+            "To'g'ri javob",
+            choices=[("0", "1-variant"), ("1", "2-variant"), ("2", "3-variant"), ("3", "4-variant")],
+            validators=[DataRequired()],
+        )
+        # Kutilgan qiymatlarni cheklaymiz - erkin matn maydoni bo'lganda
+        # admin xato bilan noma'lum status yozib qo'yishi (masalan
+        # "aproved") mumkin edi, bu esa taklifni "chalajon" holatda
+        # abadiy qoldirardi (hech qanday filtr uni topa olmaydi).
+        form_class.status = SelectField(
+            "Holat",
+            choices=[
+                ("pending_manual_review", "Ko'rib chiqilmoqda (e'tiroz)"),
+                ("approved", "Tasdiqlash"),
+                ("rejected", "Rad etish"),
+            ],
+            validators=[DataRequired()],
+        )
+        return form_class
+
+    async def get_object_for_edit(self, value):
+        # `QuestionAdmin.get_object_for_edit`dagi bilan bir xil naqsh -
+        # options/correct_option_index JSON/int sifatida saqlanadi, WTForms
+        # ularni alohida maydon sifatida kutadi.
+        obj = await super().get_object_for_edit(value)
+        if obj is not None:
+            options = list(obj.options or [])
+            for i, field_name in enumerate(_OPTION_FIELD_NAMES):
+                setattr(obj, field_name, options[i] if i < len(options) else "")
+            setattr(obj, "correct_option", str(obj.correct_option_index))
+        return obj
+
+    async def on_model_change(self, data: dict, model, is_created: bool, request: Request) -> None:
+        options = [data.pop(name, "") or "" for name in _OPTION_FIELD_NAMES]
+        correct_option = data.pop("correct_option", "0")
+        data["options"] = options
+        data["correct_option_index"] = int(correct_option)
+
+        was_already_approved = model.status == "approved" and model.resulting_question_id is not None
+        if data.get("status") == "approved" and not was_already_approved:
+            resulting_category = data.get("resulting_category")
+            category_id = resulting_category.id if resulting_category is not None else model.resulting_category_id
+            if category_id is None:
+                raise ValueError("Tasdiqlash uchun kategoriya tanlanishi shart")
+
+            async with AsyncSessionLocal() as db:
+                new_question = Question(
+                    category_id=category_id,
+                    question_text=data.get("question_text", model.question_text),
+                    options=data["options"],
+                    correct_option_index=data["correct_option_index"],
+                    is_active=True,
+                    created_by_user_id=model.submitter_user_id,
+                )
+                db.add(new_question)
+                await db.flush()
+                new_question_id = new_question.id
+                await db.commit()
+
+            data["resulting_question_id"] = new_question_id
 
 
 class CurrencyTransactionAdmin(ModelView, model=CurrencyTransaction):

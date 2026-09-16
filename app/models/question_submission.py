@@ -14,13 +14,19 @@ class QuestionSubmission(Base):
     haqiqiy o'yinda ishlatiladigan savol (tasdiqlansa) alohida `questions`
     qatori sifatida yaratiladi (`resulting_question_id` orqali bog'lanadi).
 
-    Moderatsiya to'liq AI (Gemini) tomonidan, so'rov paytida sinxron amalga
-    oshiriladi - admin tasdiqlash navbati yo'q (tasdiqlangan savol darhol
-    faol bo'lib, Solo rejimda chiqa boshlaydi). `status` shuning uchun
-    amalda faqat ikkita yakuniy holatga ega ('approved'/'rejected') -
-    'pending' faqat AI hali javob bermagan (masalan so'rov davomida xato
-    ketgan va qator umuman yaratilmagan) holatlar uchun nazariy zaxira.
-    """
+    Moderatsiya asosan AI (Gemini) tomonidan, so'rov paytida sinxron amalga
+    oshiriladi - tasdiqlangan savol darhol faol bo'lib, Solo rejimda chiqa
+    boshlaydi, admin tasdiqlash navbati yo'q. 'pending' AI hali javob
+    bermagan (masalan so'rov davomida texnik xato ketgan) holatlar uchun
+    nazariy zaxira.
+
+    2026-09-19, sifat auditi - "AI galyutsinatsiyasi" himoyasi #2 (False
+    Negative: AI noto'g'ri rad etgan yaxshi savol): foydalanuvchi rad
+    etilgan (`'rejected'`) taklifiga `POST
+    /questions/submissions/{id}/appeal` orqali E'TIROZ bildirishi mumkin -
+    status `'pending_manual_review'`ga o'tadi, admin panelida ko'rinadi va
+    inson (admin) YAKUNIY qarorni qo'lda chiqaradi
+    (`QuestionSubmissionAdmin`, `app/admin.py`)."""
 
     __tablename__ = "question_submissions"
 
@@ -47,10 +53,18 @@ class QuestionSubmission(Base):
     # ishlatishni aniqlay olmaydi.
     resulting_category: Mapped["Category | None"] = relationship(foreign_keys=[resulting_category_id])
 
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # 'pending' | 'approved' | 'rejected'
+    # String(30) - 'pending_manual_review' (21 belgi) sig'ishi uchun
+    # 'pending'/'approved'/'rejected'ning eski String(20)'idan kengaytirildi.
+    status: Mapped[str] = mapped_column(String(30), default="pending")
+    # 'pending' | 'approved' | 'rejected' | 'pending_manual_review'
     # AI'ning izohi - tasdiqlansa ham (masalan nima uchun shu kategoriya
     # tanlangani), rad etilsa ham (foydalanuvchiga ko'rsatiladigan sabab).
     ai_feedback: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Faqat foydalanuvchi e'tiroz bildirganda (status='pending_manual_review'
+    # ga o'tganda) to'ldiriladi - admin panelida "eng eski e'tirozdan
+    # boshlab" saralash uchun.
+    appealed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Tasdiqlangan bo'lsa, yaratilgan haqiqiy `Question` qatoriga ishora -
     # rad etilganda bo'sh qoladi.

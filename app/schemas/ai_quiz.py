@@ -87,6 +87,10 @@ class QuestionSubmissionRequest(BaseModel):
 
 
 class QuestionSubmissionResponse(BaseModel):
+    # 2026-09-19 qo'shildi - rad etilgan taklifga keyinroq E'TIROZ
+    # bildirish uchun (`POST /questions/submissions/{submission_id}/appeal`)
+    # klientga shu ID kerak.
+    submission_id: int
     approved: bool
     # Faqat approved=False bo'lsa to'ldiriladi - foydalanuvchiga ko'rsatish uchun.
     rejection_reason: str | None = None
@@ -95,3 +99,8 @@ class QuestionSubmissionResponse(BaseModel):
     category_id: int | None = None
     category_name: str | None = None
     question_id: int | None = None
+
+
+class SubmissionAppealResponse(BaseModel):
+    submission_id: int
+    status: str = "pending_manual_review"

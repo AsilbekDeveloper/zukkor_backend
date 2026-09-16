@@ -10,7 +10,7 @@ from app.dependencies.auth import get_current_user
 from app.models.question_submission import QuestionSubmission
 from app.models.quiz import Category, Question
 from app.models.user import User
-from app.schemas.ai_quiz import QuestionSubmissionRequest, QuestionSubmissionResponse
+from app.schemas.ai_quiz import QuestionSubmissionRequest, QuestionSubmissionResponse, SubmissionAppealResponse
 from app.services.question_moderation import QuestionModerationError, moderate_question
 from app.services.streak import TASHKENT_OFFSET
 
@@ -98,19 +98,22 @@ async def submit_question(
         .limit(1)
     )
     if duplicate_result.scalar_one_or_none() is not None:
-        db.add(
-            QuestionSubmission(
-                submitter_user_id=current_user.id,
-                question_text=question_text,
-                options=options,
-                correct_option_index=data.correct_option_index,
-                requested_category_id=data.category_id,
-                status="rejected",
-                ai_feedback="Bu savol allaqachon tizimda mavjud",
-            )
+        duplicate_submission = QuestionSubmission(
+            submitter_user_id=current_user.id,
+            question_text=question_text,
+            options=options,
+            correct_option_index=data.correct_option_index,
+            requested_category_id=data.category_id,
+            status="rejected",
+            ai_feedback="Bu savol allaqachon tizimda mavjud",
         )
+        db.add(duplicate_submission)
         await db.commit()
-        return QuestionSubmissionResponse(approved=False, rejection_reason="Bu savol allaqachon tizimda mavjud")
+        return QuestionSubmissionResponse(
+            submission_id=duplicate_submission.id,
+            approved=False,
+            rejection_reason="Bu savol allaqachon tizimda mavjud",
+        )
 
     categories_result = await db.execute(
         select(Category.id, Category.name).where(Category.is_active.is_(True), Category.owner_user_id.is_(None))
@@ -158,7 +161,9 @@ async def submit_question(
         submission.ai_feedback = result.rejection_reason
         db.add(submission)
         await db.commit()
-        return QuestionSubmissionResponse(approved=False, rejection_reason=result.rejection_reason)
+        return QuestionSubmissionResponse(
+            submission_id=submission.id, approved=False, rejection_reason=result.rejection_reason
+        )
 
     new_question = Question(
         category_id=result.category_id,
@@ -180,8 +185,46 @@ async def submit_question(
     category_name = next((name for category_id, name in categories if category_id == result.category_id), None)
 
     return QuestionSubmissionResponse(
+        submission_id=submission.id,
         approved=True,
         category_id=result.category_id,
         category_name=category_name,
         question_id=new_question.id,
     )
+
+
+@router.post(
+    "/submissions/{submission_id}/appeal",
+    response_model=SubmissionAppealResponse,
+    summary="AI rad etgan savol taklifiga e'tiroz bildirish",
+    description="AI galyutsinatsiyasi himoyasi (False Negative): AI RAD ETGAN "
+    "o'z taklifingizga e'tiroz bildirsangiz, holat 'pending_manual_review'ga "
+    "o'tadi va admin uni QO'LDA ko'rib chiqadi (tasdiqlasa savol darhol "
+    "faollashadi).",
+)
+async def appeal_submission(
+    submission_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    submission = await db.get(QuestionSubmission, submission_id)
+    # Boshqa foydalanuvchining (yoki umuman mavjud bo'lmagan) taklifi
+    # ekanligini oshkor qilmaslik uchun ikkala holatda ham bir xil 404.
+    if submission is None or submission.submitter_user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Taklif topilmadi")
+
+    if submission.status != "rejected":
+        # Allaqachon tasdiqlangan, hali AI javob bermagan, yoki
+        # ALLAQACHON e'tiroz bildirilgan (pending_manual_review) taklifga
+        # qayta e'tiroz bildirib bo'lmaydi - status o'zgarishi FAQAT
+        # 'rejected' -> 'pending_manual_review' yo'nalishida ruxsat etiladi.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Faqat AI rad etgan taklifga e'tiroz bildirish mumkin",
+        )
+
+    submission.status = "pending_manual_review"
+    submission.appealed_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    return SubmissionAppealResponse(submission_id=submission.id)

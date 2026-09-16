@@ -8,7 +8,7 @@ from app.core.security import hash_password
 from app.models.question_submission import QuestionSubmission
 from app.models.quiz import Category, Question
 from app.models.user import User
-from app.routers.question_submissions import MAX_APPROVED_SUBMISSIONS_PER_DAY, submit_question
+from app.routers.question_submissions import MAX_APPROVED_SUBMISSIONS_PER_DAY, appeal_submission, submit_question
 from app.schemas.ai_quiz import QuestionSubmissionRequest
 from app.services.question_moderation import ModerationResult, QuestionModerationError
 from conftest import make_request
@@ -376,3 +376,107 @@ async def test_daily_cap_resets_after_the_tashkent_day_boundary(db_session, monk
         db=db_session,
     )
     assert result.approved is True
+
+
+# --- E'tiroz bildirish - "AI galyutsinatsiyasi" himoyasi #2 (2026-09-19,
+# False Negative: AI noto'g'ri rad etgan yaxshi savol) ---
+
+
+@pytest.mark.anyio
+async def test_appeal_moves_a_rejected_submission_to_pending_manual_review(db_session, monkeypatch):
+    category = await _create_global_category(db_session)
+    await db_session.commit()
+    _reject("Belgilangan javob noto'g'ri", monkeypatch)
+    user = await _create_user(db_session)
+    submitted = await submit_question(
+        make_request(),
+        QuestionSubmissionRequest(
+            question_text="Yaxshi savol", options=_VALID_OPTIONS, correct_option_index=1, category_id=category.id
+        ),
+        current_user=user,
+        db=db_session,
+    )
+    assert submitted.approved is False
+
+    result = await appeal_submission(submitted.submission_id, current_user=user, db=db_session)
+
+    assert result.submission_id == submitted.submission_id
+    assert result.status == "pending_manual_review"
+    submission = await db_session.get(QuestionSubmission, submitted.submission_id)
+    assert submission.status == "pending_manual_review"
+    assert submission.appealed_at is not None
+
+
+@pytest.mark.anyio
+async def test_appeal_is_owner_only(db_session, monkeypatch):
+    category = await _create_global_category(db_session)
+    await db_session.commit()
+    _reject("Sabab", monkeypatch)
+    owner = await _create_user(db_session, "owner3@example.com")
+    stranger = await _create_user(db_session, "stranger3@example.com")
+    submitted = await submit_question(
+        make_request(),
+        QuestionSubmissionRequest(
+            question_text="Savol", options=_VALID_OPTIONS, correct_option_index=1, category_id=category.id
+        ),
+        current_user=owner,
+        db=db_session,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await appeal_submission(submitted.submission_id, current_user=stranger, db=db_session)
+    assert exc_info.value.status_code == 404
+
+    submission = await db_session.get(QuestionSubmission, submitted.submission_id)
+    assert submission.status == "rejected"  # unchanged
+
+
+@pytest.mark.anyio
+async def test_appeal_of_unknown_submission_returns_404(db_session):
+    user = await _create_user(db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await appeal_submission(999999, current_user=user, db=db_session)
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_appeal_rejects_an_already_approved_submission(db_session, monkeypatch):
+    category = await _create_global_category(db_session)
+    await db_session.commit()
+    _approve(category.id, monkeypatch)
+    user = await _create_user(db_session)
+    submitted = await submit_question(
+        make_request(),
+        QuestionSubmissionRequest(
+            question_text="Savol", options=_VALID_OPTIONS, correct_option_index=1, category_id=category.id
+        ),
+        current_user=user,
+        db=db_session,
+    )
+    assert submitted.approved is True
+
+    with pytest.raises(HTTPException) as exc_info:
+        await appeal_submission(submitted.submission_id, current_user=user, db=db_session)
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_appeal_cannot_be_repeated_once_already_pending_manual_review(db_session, monkeypatch):
+    category = await _create_global_category(db_session)
+    await db_session.commit()
+    _reject("Sabab", monkeypatch)
+    user = await _create_user(db_session)
+    submitted = await submit_question(
+        make_request(),
+        QuestionSubmissionRequest(
+            question_text="Savol", options=_VALID_OPTIONS, correct_option_index=1, category_id=category.id
+        ),
+        current_user=user,
+        db=db_session,
+    )
+    await appeal_submission(submitted.submission_id, current_user=user, db=db_session)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await appeal_submission(submitted.submission_id, current_user=user, db=db_session)
+    assert exc_info.value.status_code == 400
