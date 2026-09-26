@@ -600,3 +600,43 @@ async def test_reserve_diamond_never_overdraws_under_concurrent_requests(db_engi
         final_user = await verify_db.get(User, user_id)
         assert final_user.diamond_balance == 100 - succeeded * 30
         assert final_user.diamond_balance >= 0
+
+
+# --- Diamond balansi qattiq chegarasi (2026-09-26, foydalanuvchi qarori:
+# hech kimda 200dan ko'proq diamond turmasligi kerak) ---
+
+
+@pytest.mark.anyio
+async def test_credit_diamond_never_pushes_balance_above_the_cap(db_session):
+    user = await _create_user(db_session, "cap1@example.com", diamond_balance=150)
+
+    await wallet.credit_diamond(db_session, user, wallet.DIAMOND_BALANCE_CAP, "free_get_daily")
+
+    assert user.diamond_balance == wallet.DIAMOND_BALANCE_CAP
+
+
+@pytest.mark.anyio
+async def test_credit_diamond_from_balance_already_at_the_cap_grants_nothing_more(db_session):
+    user = await _create_user(db_session, "cap2@example.com", diamond_balance=wallet.DIAMOND_BALANCE_CAP)
+
+    await wallet.credit_diamond(db_session, user, 50, "free_get_daily")
+
+    assert user.diamond_balance == wallet.DIAMOND_BALANCE_CAP
+
+
+@pytest.mark.anyio
+async def test_credit_diamond_below_the_cap_still_credits_the_full_amount(db_session):
+    user = await _create_user(db_session, "cap3@example.com", diamond_balance=10)
+
+    await wallet.credit_diamond(db_session, user, 50, "free_get_daily")
+
+    assert user.diamond_balance == 60
+
+
+@pytest.mark.anyio
+async def test_spending_diamond_is_not_affected_by_the_cap(db_session):
+    user = await _create_user(db_session, "cap4@example.com", diamond_balance=wallet.DIAMOND_BALANCE_CAP)
+
+    await wallet.apply_atomic_balance_delta(db_session, user, currency="diamond", amount=-50, require_sufficient=True)
+
+    assert user.diamond_balance == wallet.DIAMOND_BALANCE_CAP - 50

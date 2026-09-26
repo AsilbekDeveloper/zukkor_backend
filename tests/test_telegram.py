@@ -17,7 +17,7 @@ from app.models.telegram_link_code import TelegramLinkCode
 from app.models.user import User
 from app.routers.telegram import link_telegram_account
 from app.schemas.telegram import TelegramLinkRequest
-from app.services import economy_config, telegram_bot
+from app.services import economy_config, telegram_bot, wallet
 
 
 async def _create_user(db, email: str, **kwargs) -> User:
@@ -167,17 +167,34 @@ def _daily_free_get_update(telegram_user_id: int = 777, callback_query_id: str =
 
 @pytest.mark.anyio
 async def test_daily_free_get_credits_the_configured_amount_for_a_linked_user(db_session):
-    user = await _create_user(db_session, "a@example.com", telegram_user_id=777, diamond_balance=10)
+    # Boshlang'ich balans 0 - `FREE_GET_DIAMOND_AMOUNT` (200) aynan
+    # `wallet.DIAMOND_BALANCE_CAP`ga teng, shuning uchun bu test faqat
+    # to'liq miqdor kredit qilinishini tekshiradi (chegara sinovi
+    # pastdagi alohida testda).
+    user = await _create_user(db_session, "a@example.com", telegram_user_id=777, diamond_balance=0)
     await db_session.commit()
 
     await telegram_bot.handle_update(db_session, _daily_free_get_update())
 
-    assert user.diamond_balance == 10 + economy_config.DEFAULTS[economy_config.FREE_GET_DIAMOND_AMOUNT]
+    assert user.diamond_balance == economy_config.DEFAULTS[economy_config.FREE_GET_DIAMOND_AMOUNT]
     tx = (await db_session.execute(select(CurrencyTransaction).where(CurrencyTransaction.user_id == user.id))).scalar_one()
     assert tx.currency == "diamond"
     assert tx.amount == economy_config.DEFAULTS[economy_config.FREE_GET_DIAMOND_AMOUNT]
     assert tx.reason == "daily_free_get"
     assert user.last_free_diamond_at is not None
+
+
+@pytest.mark.anyio
+async def test_daily_free_get_never_pushes_balance_above_the_hard_cap(db_session):
+    # 2026-09-26, foydalanuvchi qarori: hech kimning diamond balansi
+    # 200dan (wallet.DIAMOND_BALANCE_CAP) oshmasin - allaqachon 150si
+    # bor foydalanuvchi kunlik 200ni to'liq ololmaydi, faqat chegaragacha.
+    user = await _create_user(db_session, "b@example.com", telegram_user_id=778, diamond_balance=150)
+    await db_session.commit()
+
+    await telegram_bot.handle_update(db_session, _daily_free_get_update(telegram_user_id=778))
+
+    assert user.diamond_balance == wallet.DIAMOND_BALANCE_CAP
 
 
 @pytest.mark.anyio

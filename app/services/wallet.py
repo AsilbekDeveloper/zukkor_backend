@@ -25,7 +25,7 @@ import secrets
 import string
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import update as sql_update
+from sqlalchemy import case, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -37,6 +37,18 @@ from app.services.streak import TASHKENT_OFFSET, update_streak
 
 _REFERRAL_CODE_ALPHABET = string.ascii_uppercase + string.digits
 _REFERRAL_CODE_LENGTH = 8
+
+# 2026-09-26, foydalanuvchi qarori: hech kimning diamond_balance'i HECH
+# QACHON shu chegaradan oshmasin - "Free Get" kunlik miqdori (200) bilan
+# ATAYLAB teng, ya'ni bitta foydalanuvchi eng ko'pi bilan bir kunlik
+# to'liq claim'ga teng miqdorni "zaxira" sifatida ushlab turishi mumkin,
+# undan ortig'ini yig'a olmaydi (sarflamay davomiy yig'ib borish orqali
+# cheksiz zaxiralash imkoni yopiladi). `apply_atomic_balance_delta`
+# darajasida (pastda) qo'llanadi - bu YAGONA choke-point, shuning uchun
+# diamond qo'shiladigan HAR QANDAY yo'l (bugungi bepul claim, kelajakdagi
+# xarid, reservatsiya qaytarilishi) avtomatik shu chegaraga bo'ysunadi,
+# har bir chaqiruvchi joyida alohida tekshirish yozish shart emas.
+DIAMOND_BALANCE_CAP = 200
 
 
 class InsufficientBalanceError(Exception):
@@ -56,6 +68,7 @@ async def apply_atomic_balance_delta(
     currency: str,
     amount: int,
     require_sufficient: bool = False,
+    cap: int | None = None,
 ) -> int:
     """Balansni ATOMIK ravishda o'zgartiradi (bitta SQL
     `UPDATE ... SET balance = balance + :amount ... RETURNING balance`,
@@ -81,7 +94,17 @@ async def apply_atomic_balance_delta(
     `InsufficientBalanceError` ko'tariladi - bu tekshiruv ham xuddi shu
     bitta SQL so'rovda (`WHERE balance + amount >= 0`) amalga oshadi,
     shuning uchun oldindan Python'da `if user.balance < cost` tekshirish
-    bilan solishtirganda poyga holati yo'q."""
+    bilan solishtirganda poyga holati yo'q.
+
+    `cap` berilsa (faqat `credit_diamond` shunday chaqiradi, pastga
+    qarang) va `amount` musbat bo'lsa, natija shu qiymatdan oshmaydi -
+    2026-09-26, foydalanuvchi qarori: hech kimning diamond balansi HECH
+    QACHON `DIAMOND_BALANCE_CAP`dan oshmasin. `reserve_diamond`/
+    `release_diamond_reservation`/`finalize_diamond_reservation` ATAYLAB
+    `cap` bermaydi - ular allaqachon foydalanuvchining O'ZINING puli
+    (vaqtincha band qilingan, keyin qaytariladigan), shu chegara ularga
+    tegsa, "band qilib qaytarish" operatsiyasi noto'g'ri ravishda pulni
+    yo'q qilib qo'yardi (bu YANGI daromad emas)."""
     if currency == "coin":
         column = User.coin_balance
     elif currency == "diamond":
@@ -89,7 +112,14 @@ async def apply_atomic_balance_delta(
     else:
         raise ValueError(f"Noma'lum valyuta: {currency}")
 
-    stmt = sql_update(User).where(User.id == user.id).values(**{f"{currency}_balance": column + amount})
+    new_value = column + amount
+    if cap is not None and amount > 0:
+        # `func.least()` o'rniga portable `CASE WHEN` ishlatiladi -
+        # SQLite (testlar)da `least` funksiyasi yo'q, faqat Postgres
+        # (production)da bor.
+        new_value = case((new_value > cap, cap), else_=new_value)
+
+    stmt = sql_update(User).where(User.id == user.id).values(**{f"{currency}_balance": new_value})
     if require_sufficient:
         stmt = stmt.where(column + amount >= 0)
     stmt = stmt.returning(column)
@@ -117,19 +147,28 @@ async def _record(
     reason: str,
     extra: dict | None = None,
     require_sufficient: bool = False,
+    cap: int | None = None,
 ) -> None:
     """`apply_atomic_balance_delta` + shu o'zgarish uchun ledger yozuvi.
     Chaqiruvchi `db.commit()`ni o'zi qiladi (bir nechta `_record`
     chaqiruvi bitta tranzaksiyada birlashishi mumkin, masalan duel'da
-    ikkala o'yinchi)."""
+    ikkala o'yinchi).
+
+    Ledger'ga `amount` (so'ralgan miqdor) EMAS, HAQIQIY o'zgargan miqdor
+    (`balance_after - balance_before`) yoziladi - `cap` tufayli kesib
+    tashlangan bo'lsa (masalan balans 150 edi, +200 so'raldi, lekin
+    `DIAMOND_BALANCE_CAP=200`gacha faqat +50 qo'shildi), foydalanuvchi
+    tarixida haqiqatan nechchi Diamond kelgani ko'rinsin, so'ralgan
+    (lekin qisman rad etilgan) miqdor emas."""
+    balance_before = getattr(user, f"{currency}_balance")
     balance_after = await apply_atomic_balance_delta(
-        db, user, currency=currency, amount=amount, require_sufficient=require_sufficient
+        db, user, currency=currency, amount=amount, require_sufficient=require_sufficient, cap=cap
     )
     db.add(
         CurrencyTransaction(
             user_id=user.id,
             currency=currency,
-            amount=amount,
+            amount=balance_after - balance_before,
             reason=reason,
             balance_after=balance_after,
             extra=extra,
@@ -142,7 +181,13 @@ async def credit_coin(db: AsyncSession, user: User, amount: int, reason: str, ex
 
 
 async def credit_diamond(db: AsyncSession, user: User, amount: int, reason: str, extra: dict | None = None) -> None:
-    await _record(db, user, currency="diamond", amount=amount, reason=reason, extra=extra)
+    """Foydalanuvchiga YANGI Diamond beriladigan HAR BIR joy shu orqali
+    o'tishi kerak (hozir: Telegram botning kunlik "Free Get"i, admin
+    panelidan qo'lda kredit) - `DIAMOND_BALANCE_CAP` shu yerda
+    qo'llaniladi (`reserve_diamond`/`release_diamond_reservation`/
+    `finalize_diamond_reservation`da EMAS - ular yangi daromad emas,
+    foydalanuvchining o'zining vaqtincha band qilingan pulini qaytaradi)."""
+    await _record(db, user, currency="diamond", amount=amount, reason=reason, extra=extra, cap=DIAMOND_BALANCE_CAP)
 
 
 async def reserve_diamond(db: AsyncSession, user: User, amount: int) -> None:
@@ -311,7 +356,7 @@ async def apply_signup_defaults(db: AsyncSession, user: User) -> None:
     yaratmaydi (buning uchun pastdagi `signup_bonus_transaction`/
     `signup_coin_bonus_transaction`) - `db` faqat Coin miqdorini
     `economy_config`dan o'qish uchun kerak."""
-    user.diamond_balance = settings.DEFAULT_STARTING_DIAMONDS
+    user.diamond_balance = min(settings.DEFAULT_STARTING_DIAMONDS, DIAMOND_BALANCE_CAP)
     user.coin_balance = await economy_config.get_int(db, economy_config.SIGNUP_COIN_BONUS)
     user.referral_code = generate_referral_code()
 
@@ -325,7 +370,7 @@ def signup_bonus_transaction(user: User) -> CurrencyTransaction:
     return CurrencyTransaction(
         user_id=user.id,
         currency="diamond",
-        amount=settings.DEFAULT_STARTING_DIAMONDS,
+        amount=user.diamond_balance,
         reason="signup_bonus",
         balance_after=user.diamond_balance,
     )
