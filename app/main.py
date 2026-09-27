@@ -34,6 +34,7 @@ from app.routers import (
     friends,
     history,
     leaderboard,
+    legal,
     lobby_ws,
     notifications,
     question_submissions,
@@ -186,6 +187,7 @@ app.include_router(friends.router, prefix="/friends", tags=["Friends"])
 app.include_router(notifications.router, prefix="/notifications", tags=["Notifications"])
 app.include_router(wallet.router, prefix="/wallet", tags=["Wallet"])
 app.include_router(telegram.router, prefix="/telegram", tags=["Telegram"])
+app.include_router(legal.router, tags=["Legal"])
 app.include_router(duel_ws.router, prefix="/ws", tags=["Duel WebSocket"])
 app.include_router(lobby_ws.router, prefix="/ws", tags=["Lobby WebSocket"])
 
