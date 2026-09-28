@@ -913,18 +913,25 @@ DISCOVER_LIMIT = 100
 
 def _discover_visibility_filter(current_user_id: str):
     """A quiz shows up in Discover if it's public, or if it's
-    friends-only and its owner is actually a friend of the viewer - never
-    the viewer's own quizzes (those live in "Mening quizlarim" already),
-    never a private one, and never a global (owner_user_id is None)
-    category (Discover is specifically for OTHER USERS' quizzes)."""
+    friends-only and its owner is actually a friend of the viewer OR the
+    viewer themselves (2026-09-28, foydalanuvchi so'rovi: o'zining public/
+    friends quizlarini ham Discoverda ko'ra olishi kerak - avval BUTUNLAY
+    chiqarib tashlanardi, "Mening quizlarim"da bor degan asos bilan, lekin
+    foydalanuvchi buni chalkashtiruvchi deb topdi). Private quizlar esa
+    HAMON hech kimga (egasiga ham) Discoverda ko'rinmaydi - ular faqat
+    "Mening quizlarim"da qoladi, private'ning o'zi shuni anglatadi.
+    Hech qachon global (owner_user_id is None) kategoriya (Discover
+    faqat FOYDALANUVCHI yaratgan quizlar uchun)."""
     friend_ids_subq = select(Friendship.friend_id).where(Friendship.user_id == current_user_id)
     return and_(
         Category.owner_user_id.is_not(None),
-        Category.owner_user_id != current_user_id,
         Category.is_active.is_(True),
         or_(
             Category.visibility == "public",
-            and_(Category.visibility == "friends", Category.owner_user_id.in_(friend_ids_subq)),
+            and_(
+                Category.visibility == "friends",
+                or_(Category.owner_user_id.in_(friend_ids_subq), Category.owner_user_id == current_user_id),
+            ),
         ),
     )
 

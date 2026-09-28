@@ -80,12 +80,38 @@ async def test_friends_only_quiz_appears_only_for_actual_friends(db_session):
 
 
 @pytest.mark.anyio
-async def test_own_quizzes_never_appear_in_discover(db_session):
-    owner = await _create_user(db_session, "owner4@example.com")
-    await _create_owned_category(db_session, owner, visibility="public")
+async def test_own_public_quiz_appears_in_own_discover(db_session):
+    # 2026-09-28, foydalanuvchi so'rovi: avval o'zining quizlari
+    # Discoverdan BUTUNLAY chiqarib tashlanardi ("Mening quizlarim"da
+    # bor deb) - bu chalkashtiruvchi topilib, endi boshqalarnikidek
+    # public/friends qoidasiga bo'ysunadi (faqat private'lari hamon
+    # chiqmaydi, pastdagi testga qarang).
+    owner = await _create_user(db_session, "owner4@example.com", username="ali")
+    await _create_owned_category(db_session, owner, visibility="public", name="Ali's Quiz")
+
+    results = await discover_quizzes(current_user=owner, db=db_session)
+    assert len(results) == 1
+    assert results[0].name == "Ali's Quiz"
+    assert results[0].owner_user_id == owner.id
+
+
+@pytest.mark.anyio
+async def test_own_private_quiz_never_appears_in_own_discover(db_session):
+    owner = await _create_user(db_session, "owner4b@example.com")
+    await _create_owned_category(db_session, owner, visibility="private")
 
     results = await discover_quizzes(current_user=owner, db=db_session)
     assert results == []
+
+
+@pytest.mark.anyio
+async def test_own_friends_only_quiz_appears_in_own_discover(db_session):
+    owner = await _create_user(db_session, "owner4c@example.com")
+    await _create_owned_category(db_session, owner, visibility="friends", name="Do'stlarga")
+
+    results = await discover_quizzes(current_user=owner, db=db_session)
+    assert len(results) == 1
+    assert results[0].name == "Do'stlarga"
 
 
 @pytest.mark.anyio
