@@ -133,7 +133,11 @@ async def _send_diamond_menu(db: AsyncSession, chat_id: int, user: User) -> None
         chat_id,
         f"Joriy balansingiz: <b>{user.diamond_balance} \U0001f48e</b>\n\n"
         f"MVP bosqichida kuniga bir marta <b>BEPUL {free_amount} \U0001f48e</b> olishingiz "
-        "mumkin (taxminan 5 ta AI-test generatsiyasiga yetarli):\n\n"
+        "mumkin (taxminan 5 ta AI-test generatsiyasiga yetarli).\n\n"
+        f"<b>Diqqat:</b> test bosqichida balansingizda BIR VAQTNING O'ZIDA maksimum "
+        f"<b>{wallet.DIAMOND_BALANCE_CAP} \U0001f48e</b> turishi mumkin - kunlik "
+        f"{free_amount}ni ishlatmasangiz ham, ertaga yana bosganingizda balansingiz "
+        f"{wallet.DIAMOND_BALANCE_CAP}dan OSHMAYDI (kunlar bo'yicha yig'ilib bormaydi).\n\n"
         f"Pullik paketlar (tez orada):\n{package_lines}",
         reply_markup={
             "inline_keyboard": [
@@ -169,15 +173,26 @@ async def _handle_daily_free_get_callback(
 
     amount = await economy_config.get_int(db, economy_config.FREE_GET_DIAMOND_AMOUNT)
     user.last_free_diamond_at = datetime.now(timezone.utc)
-    await wallet.credit_diamond(
+    # `credit_diamond` `DIAMOND_BALANCE_CAP` chegarasini qo'llaydi - agar
+    # balans allaqachon chegaraga yaqin/teng bo'lsa, HAQIQIY qo'shilgan
+    # miqdor so'ralgan `amount`dan KAM (hatto 0) bo'lishi mumkin. Foydalanuvchiga
+    # aynan shu HAQIQIY miqdorni ko'rsatamiz - "200 qo'shildi" deb yozib,
+    # balans aslida kamaygan/o'zgarmagan holatlarda chalkashtirmaslik uchun
+    # (2026-09-28, foydalanuvchi topilmasi).
+    credited = await wallet.credit_diamond(
         db, user, amount, "daily_free_get", extra={"channel": "telegram_bot"},
     )
     await db.commit()
 
     await telegram_client.answer_callback_query(callback_query_id, "Qo'shildi!")
+    if credited > 0:
+        confirmation = f"✅ {credited} \U0001f48e qo'shildi!"
+    else:
+        confirmation = "Balansingiz allaqachon maksimal chegarada edi, yangi Diamond qo'shilmadi."
     await telegram_client.send_message(
         chat_id,
-        f"✅ {amount} \U0001f48e qo'shildi!\nJoriy balans: {user.diamond_balance} \U0001f48e",
+        f"{confirmation}\nJoriy balans: {user.diamond_balance} \U0001f48e "
+        f"(test bosqichida maksimum {wallet.DIAMOND_BALANCE_CAP} \U0001f48e).",
     )
 
 

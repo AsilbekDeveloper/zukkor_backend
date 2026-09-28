@@ -148,7 +148,7 @@ async def _record(
     extra: dict | None = None,
     require_sufficient: bool = False,
     cap: int | None = None,
-) -> None:
+) -> int:
     """`apply_atomic_balance_delta` + shu o'zgarish uchun ledger yozuvi.
     Chaqiruvchi `db.commit()`ni o'zi qiladi (bir nechta `_record`
     chaqiruvi bitta tranzaksiyada birlashishi mumkin, masalan duel'da
@@ -159,35 +159,44 @@ async def _record(
     tashlangan bo'lsa (masalan balans 150 edi, +200 so'raldi, lekin
     `DIAMOND_BALANCE_CAP=200`gacha faqat +50 qo'shildi), foydalanuvchi
     tarixida haqiqatan nechchi Diamond kelgani ko'rinsin, so'ralgan
-    (lekin qisman rad etilgan) miqdor emas."""
+    (lekin qisman rad etilgan) miqdor emas. Shu HAQIQIY miqdorni
+    qaytaradi - chaqiruvchi (masalan Telegram bot) foydalanuvchiga
+    "necha Diamond qo'shildi" deb TO'G'RI xabar bera olsin (2026-09-28,
+    foydalanuvchi topilmasi: cheklov ishlagan holatda ham bot "200
+    qo'shildi" deb yozib, chalkashtirar edi)."""
     balance_before = getattr(user, f"{currency}_balance")
     balance_after = await apply_atomic_balance_delta(
         db, user, currency=currency, amount=amount, require_sufficient=require_sufficient, cap=cap
     )
+    actual_delta = balance_after - balance_before
     db.add(
         CurrencyTransaction(
             user_id=user.id,
             currency=currency,
-            amount=balance_after - balance_before,
+            amount=actual_delta,
             reason=reason,
             balance_after=balance_after,
             extra=extra,
         )
     )
+    return actual_delta
 
 
-async def credit_coin(db: AsyncSession, user: User, amount: int, reason: str, extra: dict | None = None) -> None:
-    await _record(db, user, currency="coin", amount=amount, reason=reason, extra=extra)
+async def credit_coin(db: AsyncSession, user: User, amount: int, reason: str, extra: dict | None = None) -> int:
+    return await _record(db, user, currency="coin", amount=amount, reason=reason, extra=extra)
 
 
-async def credit_diamond(db: AsyncSession, user: User, amount: int, reason: str, extra: dict | None = None) -> None:
+async def credit_diamond(db: AsyncSession, user: User, amount: int, reason: str, extra: dict | None = None) -> int:
     """Foydalanuvchiga YANGI Diamond beriladigan HAR BIR joy shu orqali
     o'tishi kerak (hozir: Telegram botning kunlik "Free Get"i, admin
     panelidan qo'lda kredit) - `DIAMOND_BALANCE_CAP` shu yerda
     qo'llaniladi (`reserve_diamond`/`release_diamond_reservation`/
     `finalize_diamond_reservation`da EMAS - ular yangi daromad emas,
-    foydalanuvchining o'zining vaqtincha band qilingan pulini qaytaradi)."""
-    await _record(db, user, currency="diamond", amount=amount, reason=reason, extra=extra, cap=DIAMOND_BALANCE_CAP)
+    foydalanuvchining o'zining vaqtincha band qilingan pulini qaytaradi).
+
+    HAQIQIY kredit qilingan miqdorni qaytaradi (cheklov tufayli
+    so'ralgandan kam bo'lishi mumkin)."""
+    return await _record(db, user, currency="diamond", amount=amount, reason=reason, extra=extra, cap=DIAMOND_BALANCE_CAP)
 
 
 async def reserve_diamond(db: AsyncSession, user: User, amount: int) -> None:
