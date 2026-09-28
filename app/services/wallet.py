@@ -285,14 +285,29 @@ async def finalize_diamond_reservation(
     )
 
 
+async def charge_diamond_for_export(db: AsyncSession, user: User, amount: int, *, extra: dict | None = None) -> None:
+    """Quizni PDF (bosma test) sifatida eksport qilish narxini ATOMIK
+    yechadi (2026-09-28, foydalanuvchi qarori - eksport Diamond bilan
+    to'lanadi, narxi savollar soniga qarab hisoblanadi). Yetarli bo'lmasa
+    `InsufficientBalanceError` ko'taradi - hech narsa yozilmaydi,
+    chaqiruvchi (`app/routers/quiz_export.py`) buni foydalanuvchiga aniq
+    xabar bilan 402'ga aylantiradi. `amount <= 0` bo'lsa (masalan admin
+    narxni 0ga o'rnatgan) hech narsa qilinmaydi - foydasiz nol-summali
+    ledger yozuvi yaratilmaydi. Chaqiruvchi COMMIT qilishi kerak."""
+    if amount <= 0:
+        return
+    await _record(db, user, currency="diamond", amount=-amount, reason="quiz_export", extra=extra, require_sufficient=True)
+
+
 # --- Duel stavkasi (2026-09-17, anti-farming/inflyatsiya himoyasi) ---
 #
 # UCHALASI HAM FAQAT "coin" valyutasi bilan ishlaydi - `currency`
 # parametri yo'q, ataylab qattiq kodlangan. Duel yutug'i hech qachon
 # Diamond bermasligi shu bilan STRUKTURAVIY ravishda kafolatlanadi (bu
 # funksiyalarni chaqirib Diamond berish shunchaki MUMKIN EMAS), izohga
-# tayanadigan konvensiya emas. Diamond FAQAT `app/routers/ai_quiz.py`
-# orqali (AI-generatsiya narxi sifatida) harakatlanadi.
+# tayanadigan konvensiya emas. Diamond `app/routers/ai_quiz.py` (AI-
+# generatsiya) va `app/routers/quiz_export.py` (PDF eksport) orqali
+# harakatlanadi - Duel bilan hech qachon aralashmaydi.
 
 
 async def charge_duel_stake(db: AsyncSession, user: User, amount: int) -> None:

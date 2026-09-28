@@ -39,6 +39,7 @@ from app.routers import (
     notifications,
     question_submissions,
     quiz,
+    quiz_export,
     reports,
     telegram,
     users,
@@ -178,6 +179,7 @@ app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(users.router, prefix="/users", tags=["Users"])
 app.include_router(categories.router, prefix="/categories", tags=["Categories"])
 app.include_router(quiz.router, prefix="/quiz", tags=["Quiz"])
+app.include_router(quiz_export.router, prefix="/quiz", tags=["Quiz Export"])
 app.include_router(reports.router, prefix="/questions", tags=["Reports"])
 app.include_router(question_submissions.router, prefix="/questions", tags=["Question Submissions"])
 app.include_router(ai_quiz.router, prefix="/ai-quiz", tags=["AI Quiz"])

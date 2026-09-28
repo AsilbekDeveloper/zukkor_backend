@@ -1,0 +1,12 @@
+DejaVuSans.ttf / DejaVuSans-Bold.ttf
+
+Bundled here to render Uzbek Latin (oʻ, gʻ), Uzbek/Russian Cyrillic, and
+Latin text correctly in exported PDF quizzes (app/services/quiz_pdf_export.py) -
+reportlab's built-in fonts only cover Latin-1 and cannot render Cyrillic
+or the Uzbek apostrophe letters.
+
+DejaVu fonts are released under a permissive license (based on the
+Bitstream Vera license, with additional public-domain glyph
+contributions) that explicitly permits redistribution, including
+bundling within another application. Full license text:
+https://dejavu-fonts.github.io/License.html
