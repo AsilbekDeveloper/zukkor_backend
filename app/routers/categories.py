@@ -38,6 +38,7 @@ async def list_categories(db: AsyncSession = Depends(get_db)):
             icon_name=category.icon_name,
             color_key=category.color_key,
             question_count=question_count,
+            play_count=category.play_count,
         )
         for category, question_count in result.all()
     ]

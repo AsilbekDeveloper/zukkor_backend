@@ -17,6 +17,12 @@ class Category(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # Shu kategoriyadan necha marta savol o'ynalgani (Solo+Duel+Lobby
+    # yig'indisi) - `app.services.wallet.charge_for_question_play`
+    # tomonidan har bir savol-javobda ATOMIK oshiriladi. Home ekranidagi
+    # "eng ko'p o'ynalgan 3 ta kategoriya"ni aniqlash uchun (2026-09-28).
+    play_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
     # NULL - hammaga ochiq, admin boshqaradigan global kategoriya (GET
     # /categories shu turdagilarni qaytaradi). Bo'lsa - shu foydalanuvchi
     # tomonidan yaratilgan (AI yoki qo'lda) shaxsiy quiz - kimga

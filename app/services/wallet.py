@@ -25,12 +25,12 @@ import secrets
 import string
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import case, update as sql_update
+from sqlalchemy import case, select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.currency_transaction import CurrencyTransaction
-from app.models.quiz import Question
+from app.models.quiz import Category, Question
 from app.models.user import User
 from app.services import economy_config
 from app.services.streak import TASHKENT_OFFSET, update_streak
@@ -472,7 +472,16 @@ async def charge_for_question_play(db: AsyncSession, player: User, question_id: 
     balansni bir vaqtda yechishga urinsa ham, DB darajasidagi qulf
     tufayli ikkalasi ham "yetarli" deb noto'g'ri o'tib keta olmaydi
     (avvalgi Python darajasidagi `player.coin_balance < cost` tekshiruvi
-    poyga holatiga ochiq edi - 2026-09-13 audit topilmasi)."""
+    poyga holatiga ochiq edi - 2026-09-13 audit topilmasi).
+
+    2026-09-28: shu yerda savolning kategoriyasi uchun `play_count`ni
+    ham ATOMIK oshiradi (Home ekranidagi "eng ko'p o'ynalgan 3 ta
+    kategoriya"ni aniqlash uchun) - pastdagi `COIN_COST_PER_QUESTION == 0`
+    erta qaytishidan OLDIN, chunki bu iqtisodiy emas, sof analitika: narx
+    0ga o'rnatilgan bo'lsa ham savol haqiqatda o'ynalgani hisoblanishi
+    kerak."""
+    await _record_category_play(db, question_id)
+
     cost = await economy_config.get_int(db, economy_config.COIN_COST_PER_QUESTION)
     if cost <= 0:
         return
@@ -500,6 +509,23 @@ async def charge_for_question_play(db: AsyncSession, player: User, question_id: 
         await credit_coin(
             db, author, payout, "question_royalty", extra={"question_id": question_id, "payer_user_id": player.id}
         )
+
+
+async def _record_category_play(db: AsyncSession, question_id: int) -> None:
+    """`charge_for_question_play`ning yordamchisi - ATOMIK bitta SQL
+    `UPDATE ... SET play_count = play_count + 1` (Python darajasida
+    o'qib-yozish emas, xuddi `apply_atomic_balance_delta`dagi kabi -
+    ko'plab parallel o'yinchilar bir xil kategoriyani bir vaqtda o'ynasa
+    ham hisob yo'qolib qolmaydi). AI-generatsiya/foydalanuvchi
+    quizlarining (`owner_user_id` bor) `play_count`i ham hisoblanaveradi -
+    faqat global (`owner_user_id IS NULL`) kategoriyalar Home'ning "eng
+    ko'p o'ynalgan" ro'yxatida ishlatiladi (`GET /categories`), shuning
+    uchun bu yerda cheklov shart emas."""
+    category_id_result = await db.execute(select(Question.category_id).where(Question.id == question_id))
+    category_id = category_id_result.scalar_one_or_none()
+    if category_id is None:
+        return
+    await db.execute(sql_update(Category).where(Category.id == category_id).values(play_count=Category.play_count + 1))
 
 
 def diamond_cost_from_tokens(input_tokens: int, output_tokens: int) -> int:

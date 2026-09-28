@@ -7,6 +7,7 @@ class CategoryOut(BaseModel):
     icon_name: str
     color_key: str
     question_count: int
+    play_count: int
 
 
 class QuizStartRequest(BaseModel):
