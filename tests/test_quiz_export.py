@@ -1,6 +1,7 @@
 """Quizni PDF (bosma test) sifatida eksport qilish (2026-09-28) -
-`app/routers/quiz_export.py`: kirish huquqi, Diamond narxlash (savollar
-soniga qarab) va balans yetarli bo'lmasa 402 qaytarishni tekshiradi."""
+`app/routers/quiz_export.py`: kirish huquqi, Diamond narxlash (2026-09-29
+qaroridan buyon QATIY BELGILANGAN, savollar soniga QARAMAYDI) va balans
+yetarli bo'lmasa 402 qaytarishni tekshiradi."""
 
 import pytest
 from fastapi import HTTPException
@@ -42,8 +43,8 @@ async def _create_category(
     return category
 
 
-def _cost_per_question() -> int:
-    return economy_config.DEFAULTS[economy_config.EXPORT_PDF_DIAMOND_COST_PER_QUESTION]
+def _flat_export_cost() -> int:
+    return economy_config.DEFAULTS[economy_config.EXPORT_DIAMOND_COST]
 
 
 @pytest.mark.anyio
@@ -56,7 +57,7 @@ async def test_exporting_a_global_category_produces_a_pdf_and_charges_diamond(db
     assert response.media_type == "application/pdf"
     assert response.body.startswith(b"%PDF")
 
-    expected_cost = _cost_per_question() * 5
+    expected_cost = _flat_export_cost()
     await db_session.refresh(user)
     assert user.diamond_balance == 100 - expected_cost
 
@@ -82,6 +83,21 @@ async def test_export_fails_with_402_when_diamond_balance_is_too_low(db_session)
 
     rows = (await db_session.execute(select(CurrencyTransaction))).scalars().all()
     assert rows == []
+
+
+@pytest.mark.anyio
+async def test_export_cost_does_not_depend_on_question_count(db_session):
+    small_user = await _create_user(db_session, "small@example.com", diamond_balance=100)
+    big_user = await _create_user(db_session, "big@example.com", diamond_balance=100)
+    small_category = await _create_category(db_session, owner=None, question_count=1, name="Kichik")
+    big_category = await _create_category(db_session, owner=None, question_count=30, name="Katta")
+
+    await export_quiz_pdf(small_category.id, current_user=small_user, db=db_session)
+    await export_quiz_pdf(big_category.id, current_user=big_user, db=db_session)
+
+    await db_session.refresh(small_user)
+    await db_session.refresh(big_user)
+    assert small_user.diamond_balance == big_user.diamond_balance == 100 - _flat_export_cost()
 
 
 @pytest.mark.anyio
@@ -143,7 +159,7 @@ async def test_exporting_a_global_category_produces_a_docx_and_charges_diamond(d
     # ekanini kod darajasida tekshirish uchun eng arzon yo'l.
     assert response.body.startswith(b"PK")
 
-    expected_cost = _cost_per_question() * 4
+    expected_cost = _flat_export_cost()
     await db_session.refresh(user)
     assert user.diamond_balance == 100 - expected_cost
 

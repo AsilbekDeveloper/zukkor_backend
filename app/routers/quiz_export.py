@@ -1,9 +1,9 @@
 """Quizni PDF/Word (.docx) sifatida eksport qilish - o'qituvchi sinfda
 qog'ozda test o'tkazmoqchi bo'lsa (2026-09-28/29, foydalanuvchi so'rovi).
-Diamond bilan to'lanadi, narxi savollar soniga qarab (ikkala format uchun
-ham bir xil: `economy_config.EXPORT_PDF_DIAMOND_COST_PER_QUESTION *
-savollar soni` - alohida narx kaliti YO'Q, formatdan qat'i nazar bitta
-narx admin panelidan boshqariladi).
+Diamond bilan to'lanadi - QATIY BELGILANGAN narx (`economy_config.
+EXPORT_DIAMOND_COST`, savollar soniga QARAMAYDI - 2026-09-29,
+foydalanuvchi qarori bilan savol-boshiga hisobdan qat'iy narxga
+o'tkazildi), ikkala format uchun ham bir xil, alohida narx kaliti YO'Q.
 
 Kirish huquqi xuddi o'sha quizni O'YNASH bilan bir xil qoidaga bo'ysunadi
 (`quiz_access.can_access_category`) - global kategoriyalar hammaga ochiq,
@@ -49,8 +49,7 @@ async def _load_exportable_quiz(db: AsyncSession, category_id: int, user_id: str
 
 
 async def _charge_export(db: AsyncSession, current_user: User, category_id: int, question_count: int) -> None:
-    per_question_cost = await economy_config.get_int(db, economy_config.EXPORT_PDF_DIAMOND_COST_PER_QUESTION)
-    total_cost = per_question_cost * question_count
+    total_cost = await economy_config.get_int(db, economy_config.EXPORT_DIAMOND_COST)
     try:
         await wallet.charge_diamond_for_export(
             db, current_user, total_cost, extra={"category_id": category_id, "question_count": question_count},

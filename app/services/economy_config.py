@@ -27,7 +27,7 @@ QUESTION_AUTHOR_SHARE_PERCENT = "question_author_share_percent"
 DUEL_STAKE_COINS = "duel_stake_coins"
 DUEL_TAX_PERCENT = "duel_tax_percent"
 FREE_GET_DIAMOND_AMOUNT = "free_get_diamond_amount"
-EXPORT_PDF_DIAMOND_COST_PER_QUESTION = "export_pdf_diamond_cost_per_question"
+EXPORT_DIAMOND_COST = "export_diamond_cost"
 
 DEFAULTS: dict[str, int] = {
     DAILY_LOGIN_BONUS: 5,
@@ -46,12 +46,12 @@ DEFAULTS: dict[str, int] = {
     # savol soni), shuning uchun bu ANIQ emas, TAXMINIY kalibrlash -
     # kerak bo'lsa admin panelidan osongina o'zgartiriladi.
     FREE_GET_DIAMOND_AMOUNT: 200,
-    # 2026-09-28, foydalanuvchi qarori: quizni PDF (bosma test qog'ozi)
-    # sifatida eksport qilish pullik - narxi savollar soniga qarab
-    # (`len(questions) * shu qiymat`) hisoblanadi. Boshlang'ich qiymat
-    # hali oxirgi emas - kerak bo'lsa admin panelidan qayta deploy'siz
-    # o'zgartiriladi.
-    EXPORT_PDF_DIAMOND_COST_PER_QUESTION: 2,
+    # 2026-09-29, foydalanuvchi qarori: quizni PDF/Word sifatida eksport
+    # qilish QATIY BELGILANGAN 40 Diamond - savollar soniga QARAMAYDI
+    # (avval savol boshiga hisoblanardi, endi doimiy narx). 1 Diamond =
+    # taxminan 18 so'm (foydalanuvchi bergan baho) bo'yicha bu ~720 so'mga
+    # to'g'ri keladi.
+    EXPORT_DIAMOND_COST: 40,
 }
 
 # Foizni ifodalaydigan kalitlar - 0 dan 100 gacha bo'lishi shart. Aks
@@ -74,7 +74,7 @@ _DESCRIPTIONS: dict[str, str] = {
     DUEL_STAKE_COINS: "Duel boshlanganda har bir o'yinchidan yechiladigan stavka (Coin)",
     DUEL_TAX_PERCENT: "Duel yutuq fondidan ushlab qolinadigan (yo'q qilinadigan) soliq (foizda, 0-100)",
     FREE_GET_DIAMOND_AMOUNT: "Telegram botda kuniga bir marta beriladigan bepul Diamond miqdori",
-    EXPORT_PDF_DIAMOND_COST_PER_QUESTION: "Quizni PDF qilib eksport qilishda har bir savol uchun olinadigan Diamond narxi",
+    EXPORT_DIAMOND_COST: "Quizni PDF/Word qilib eksport qilish narxi (Diamond, savollar soniga qaramaydi)",
 }
 
 
