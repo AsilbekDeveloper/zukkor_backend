@@ -5,10 +5,11 @@ from collections import defaultdict
 from starlette.middleware import Middleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
+from starlette.responses import HTMLResponse
 from wtforms import SelectField, StringField
 from wtforms.validators import DataRequired
 
-from sqladmin import ModelView
+from sqladmin import BaseView, ModelView, expose
 from sqladmin.authentication import AuthenticationBackend
 
 from app.core.config import settings
@@ -20,6 +21,104 @@ from app.models.quiz import Category, Question
 from app.models.reported_question import ReportedQuestion
 from app.models.user import User
 from app.services import economy_config, wallet
+from app.services.admin_analytics import AdminAnalytics, compute_analytics
+
+_ANALYTICS_PAGE = """<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<title>Zukkor - Statistika</title>
+<style>
+  body {{ font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: #1a1c23; color: #e4e6eb; padding: 32px; }}
+  h1 {{ margin-bottom: 24px; }}
+  h2 {{ margin-top: 40px; font-size: 16px; color: #a0a4ad; }}
+  .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }}
+  .card {{ border: 1px solid #333846; border-radius: 8px; padding: 16px; background: #22252e; }}
+  .card .label {{ font-size: 13px; color: #888; }}
+  .card .value {{ font-size: 26px; font-weight: 700; margin-top: 4px; }}
+  table {{ width: 100%; border-collapse: collapse; margin-top: 12px; }}
+  th, td {{ text-align: left; padding: 8px 12px; border-bottom: 1px solid #333846; }}
+  a {{ color: #ff7a50; }}
+</style>
+</head>
+<body>
+<h1>Zukkor - umumiy holat</h1>
+<div class="cards">
+{cards}
+</div>
+
+<h2>Eng ko'p o'ynalgan kategoriyalar</h2>
+<table>
+<thead><tr><th>Kategoriya</th><th>O'ynalgan marta</th></tr></thead>
+<tbody>{top_categories_rows}</tbody>
+</table>
+
+<h2>Eksport (so'nggi 30 kun)</h2>
+<div class="cards">
+{export_cards}
+</div>
+
+<h2>AI generatsiya</h2>
+<div class="cards">
+{ai_cards}
+</div>
+<p style="margin-top: 32px;"><a href="/admin/">← Admin panelga qaytish</a></p>
+</body>
+</html>"""
+
+
+def _card(label: str, value: object) -> str:
+    return f'<div class="card"><div class="label">{label}</div><div class="value">{value}</div></div>'
+
+
+def _render_analytics_page(stats: AdminAnalytics) -> str:
+    cards = "".join(
+        [
+            _card("Jami foydalanuvchi", stats.total_users),
+            _card("Faol (bloklanmagan)", stats.active_users),
+            _card("Bugun o'ynaganlar (DAU)", stats.dau),
+            _card("So'nggi 7 kunda (WAU)", stats.wau),
+            _card("Jami o'ynalgan o'yinlar", stats.total_games_played),
+            _card("Aylanmadagi Coin", stats.total_coin_in_circulation),
+            _card("Aylanmadagi Diamond", stats.total_diamond_in_circulation),
+        ]
+    )
+    top_categories_rows = "".join(
+        f"<tr><td>{c.name}</td><td>{c.play_count}</td></tr>" for c in stats.top_categories
+    ) or "<tr><td colspan=2>Hali ma'lumot yo'q</td></tr>"
+    export_cards = "".join(
+        [
+            _card("Eksport soni", stats.export_count_30d),
+            _card("Sarflangan Diamond", stats.export_diamond_spent_30d),
+        ]
+    )
+    ai_cards = "".join(
+        [
+            _card("Muvaffaqiyatli generatsiya", stats.ai_jobs_completed),
+            _card("Muvaffaqiyatsiz generatsiya", stats.ai_jobs_failed),
+        ]
+    )
+    return _ANALYTICS_PAGE.format(
+        cards=cards, top_categories_rows=top_categories_rows, export_cards=export_cards, ai_cards=ai_cards,
+    )
+
+
+class AnalyticsAdmin(BaseView):
+    """"Admin hamma narsani bilib turishi kerak" (2026-09-29, foydalanuvchi
+    so'rovi) - SQLAdmin'ning o'zi faqat xom jadval ko'rsatadi, bu sahifa
+    ularni bir nechta tushunarli songa birlashtirib beradi. Faqat
+    O'QISH uchun - o'zgartirish kerak bo'lgan narsalar tegishli
+    ModelView'lardan (masalan balans - `CurrencyTransactionAdmin`)
+    amalga oshiriladi, bu yerda emas."""
+
+    name = "Statistika"
+    icon = "fa-solid fa-chart-line"
+
+    @expose("/analytics", methods=["GET"])
+    async def analytics_page(self, request: Request) -> HTMLResponse:
+        async with AsyncSessionLocal() as db:
+            stats = await compute_analytics(db)
+        return HTMLResponse(_render_analytics_page(stats))
 
 _OPTION_FIELD_NAMES = ["option_1", "option_2", "option_3", "option_4"]
 
@@ -81,6 +180,58 @@ class AdminAuth(AuthenticationBackend):
 
     async def authenticate(self, request: Request) -> bool:
         return bool(request.session.get("admin_authenticated"))
+
+
+class UserAdmin(ModelView, model=User):
+    """2026-09-29, foydalanuvchi so'rovi: "admin hamma narsani ko'rib
+    tura olishi, o'zgartira olishi kerak" - avval `User` jadvali uchun
+    UMUMAN admin ko'rinishi yo'q edi (qidirish/bloklash imkonsiz edi).
+
+    `coin_balance`/`diamond_balance` ATAYLAB formada YO'Q - ularni shu
+    yerdan to'g'ridan-to'g'ri o'zgartirish `CurrencyTransaction` daftarini
+    (audit) chetlab o'tardi, balans/tarix mos kelmay qolardi. Balansni
+    tuzatish kerak bo'lsa - `CurrencyTransactionAdmin`dan yangi qator
+    qo'shish orqali (u yerda tuzatish avtomatik audit qilinadi).
+    `hashed_password` ham YO'Q - xavfsizlik."""
+
+    name = "Foydalanuvchi"
+    name_plural = "Foydalanuvchilar"
+    icon = "fa-solid fa-users"
+
+    can_create = False
+    can_delete = False
+
+    column_list = [
+        User.id,
+        User.email,
+        User.username,
+        User.is_active,
+        User.coin_balance,
+        User.diamond_balance,
+        User.level,
+        User.total_xp,
+        User.games_played,
+        User.created_at,
+    ]
+    column_searchable_list = [User.email, User.username]
+    column_sortable_list = [
+        User.created_at,
+        User.total_xp,
+        User.level,
+        User.games_played,
+        User.coin_balance,
+        User.diamond_balance,
+    ]
+    column_filters = [User.is_active]
+    column_default_sort = [(User.created_at, True)]
+
+    # `is_active = False` - haqiqiy "Kill Switch": `get_current_user`
+    # (`app/dependencies/auth.py`) va login (`app/routers/auth.py`)
+    # buni ANIQ tekshiradi - admin shu yerdan `False` qilib qo'ysa,
+    # foydalanuvchi darhol kira olmay qoladi (mavjud token bilan ham).
+    # Boshqa maydonlar - faqat aniq xatoni tuzatish uchun (masalan
+    # noto'g'ri yozilgan ism), balans/statistika EMAS.
+    form_columns = [User.is_active, User.username, User.first_name, User.last_name, User.email]
 
 
 class CategoryAdmin(ModelView, model=Category):

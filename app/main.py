@@ -16,12 +16,14 @@ from sqladmin import Admin
 
 from app.admin import (
     AdminAuth,
+    AnalyticsAdmin,
     AppConfigAdmin,
     CategoryAdmin,
     CurrencyTransactionAdmin,
     QuestionAdmin,
     QuestionSubmissionAdmin,
     ReportedQuestionAdmin,
+    UserAdmin,
 )
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal, Base, engine
@@ -199,6 +201,8 @@ app.mount("/media", StaticFiles(directory="media"), name="media")
 admin = Admin(
     app, engine, authentication_backend=AdminAuth(secret_key=settings.ADMIN_SESSION_SECRET), title="Zukkor Admin"
 )
+admin.add_view(AnalyticsAdmin)
+admin.add_view(UserAdmin)
 admin.add_view(CategoryAdmin)
 admin.add_view(QuestionAdmin)
 admin.add_view(ReportedQuestionAdmin)
