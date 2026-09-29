@@ -10,7 +10,7 @@ from app.core.security import hash_password
 from app.models.currency_transaction import CurrencyTransaction
 from app.models.quiz import Category, Question
 from app.models.user import User
-from app.routers.quiz_export import export_quiz_pdf
+from app.routers.quiz_export import export_quiz_docx, export_quiz_pdf
 from app.services import economy_config
 
 
@@ -121,3 +121,41 @@ async def test_exporting_a_nonexistent_category_returns_404(db_session):
     with pytest.raises(HTTPException) as exc_info:
         await export_quiz_pdf(999999, current_user=user, db=db_session)
     assert exc_info.value.status_code == 404
+
+
+# --- DOCX (2026-09-29) - xuddi shu huquq/narxlash mantig'ini ulashadi
+# (`_load_exportable_quiz`/`_charge_export`), shuning uchun faqat faylning
+# o'zi (Word ZIP signature) va narxlash to'g'riligini tekshiramiz - PDF
+# testlarida allaqachon qamrab olingan huquq/xato holatlarini takrorlamaymiz.
+
+
+@pytest.mark.anyio
+async def test_exporting_a_global_category_produces_a_docx_and_charges_diamond(db_session):
+    user = await _create_user(db_session, "teacher5@example.com", diamond_balance=100)
+    category = await _create_category(db_session, owner=None, question_count=4)
+
+    response = await export_quiz_docx(category.id, current_user=user, db=db_session)
+
+    assert response.media_type == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    # .docx - ichida ZIP arxiv (PK signature) - Word'ning haqiqiy fayl
+    # ekanini kod darajasida tekshirish uchun eng arzon yo'l.
+    assert response.body.startswith(b"PK")
+
+    expected_cost = _cost_per_question() * 4
+    await db_session.refresh(user)
+    assert user.diamond_balance == 100 - expected_cost
+
+
+@pytest.mark.anyio
+async def test_docx_export_fails_with_402_when_diamond_balance_is_too_low(db_session):
+    user = await _create_user(db_session, "teacher6@example.com", diamond_balance=1)
+    category = await _create_category(db_session, owner=None, question_count=4)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await export_quiz_docx(category.id, current_user=user, db=db_session)
+    assert exc_info.value.status_code == 402
+
+    await db_session.refresh(user)
+    assert user.diamond_balance == 1
