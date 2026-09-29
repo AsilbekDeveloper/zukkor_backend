@@ -68,7 +68,6 @@ def build_quiz_pdf(*, quiz_name: str, questions: list[Question]) -> bytes:
     title_style = ParagraphStyle(
         "QuizTitle", parent=styles["Title"], fontName=_FONT_BOLD, fontSize=18, alignment=TA_CENTER,
     )
-    meta_style = ParagraphStyle("QuizMeta", parent=styles["Normal"], fontName=_FONT_REGULAR, fontSize=11)
     question_style = ParagraphStyle(
         "QuestionText", parent=styles["Normal"], fontName=_FONT_BOLD, fontSize=12, spaceBefore=10, spaceAfter=4,
     )
@@ -82,10 +81,6 @@ def build_quiz_pdf(*, quiz_name: str, questions: list[Question]) -> bytes:
 
     story = [
         Paragraph(quiz_name, title_style),
-        Spacer(1, 0.6 * cm),
-        Paragraph("F.I.Sh: _______________________________________", meta_style),
-        Spacer(1, 0.2 * cm),
-        Paragraph("Sinf/guruh: ____________&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Sana: ____________", meta_style),
         Spacer(1, 0.8 * cm),
     ]
 
