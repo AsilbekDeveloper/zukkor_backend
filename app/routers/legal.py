@@ -89,3 +89,70 @@ _PAGE = """<!DOCTYPE html>
 @router.get("/privacy-policy", response_class=HTMLResponse, include_in_schema=False)
 async def privacy_policy() -> str:
     return _PAGE
+
+
+# 2026-09-30, Play Console "Data safety" bo'limi talabi: ilovasiz ham
+# (masalan o'chirib tashlagan yoki o'rnatmagan foydalanuvchi) hisobni
+# o'chirishni so'rash yo'li ko'rsatilgan ochiq sahifa. Haqiqiy o'chirish
+# `DELETE /auth/me`da allaqachon bor (barcha bog'liq ma'lumotlar bilan
+# birga, saqlash muddatisiz) - bu sahifa faqat YO'L-YO'RIQ, alohida
+# so'rov qabul qiladigan forma EMAS (buni qilish uchun autentifikatsiya
+# kerak bo'lardi, ilovaning o'zi buni ancha xavfsizroq bajaradi).
+_DELETE_ACCOUNT_PAGE = """<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zukkor - Hisobni o'chirish</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 720px; margin: 0 auto; padding: 32px 20px 64px; line-height: 1.6; color: #1a1a1a; }
+  h1 { font-size: 24px; margin-bottom: 4px; }
+  .updated { color: #666; font-size: 13px; margin-bottom: 32px; }
+  h2 { font-size: 17px; margin-top: 32px; }
+  ol, ul { padding-left: 20px; }
+  a { color: #ff7a50; }
+</style>
+</head>
+<body>
+<h1>Zukkor - Hisobni o'chirish</h1>
+<p class="updated">Oxirgi yangilanish: 2026-09-30</p>
+
+<h2>1. Ilova orqali (tavsiya etiladi)</h2>
+<ol>
+  <li>Zukkor ilovasini oching va tizimga kiring.</li>
+  <li><b>Profil</b> → <b>Sozlamalar</b> bo'limiga o'ting.</li>
+  <li>Pastga tushib, <b>"Xavfli zona"</b> bo'limidan <b>"Akkauntni o'chirish"</b>ni tanlang.</li>
+  <li>Parolingizni kiritib tasdiqlang (Google orqali kirgan bo'lsangiz, parol so'ralmaydi).</li>
+</ol>
+<p>Hisobingiz va unga bog'liq BARCHA ma'lumotlar (do'stlar ro'yxati, o'yin/duel tarixi, Coin/Diamond balansi, bildirishnomalar) <b>darhol va butunlay</b> o'chiriladi - hech qanday qo'shimcha saqlash muddati yo'q.</p>
+
+<h2>2. Ilovaga kira olmasangiz</h2>
+<p>Agar ilovani o'chirib tashlagan yoki boshqa sababga ko'ra kira olmayotgan bo'lsangiz, ro'yxatdan o'tgan email manzilingizni ko'rsatib, quyidagi manzilga so'rov yuboring:</p>
+<p><a href="mailto:ilhomovasilbek7@gmail.com">ilhomovasilbek7@gmail.com</a></p>
+<p>So'rovingiz asosida hisobingiz qo'lda, xuddi yuqoridagi kabi to'liq o'chiriladi.</p>
+
+<hr style="margin: 48px 0; border: none; border-top: 1px solid #ddd;">
+
+<h1>Zukkor - Delete Account (English)</h1>
+<p class="updated">Last updated: 2026-09-30</p>
+
+<h2>1. From the app (recommended)</h2>
+<ol>
+  <li>Open the Zukkor app and sign in.</li>
+  <li>Go to <b>Profile</b> → <b>Settings</b>.</li>
+  <li>Scroll down to the <b>"Danger zone"</b> section and choose <b>"Delete account"</b>.</li>
+  <li>Confirm with your password (not required if you signed in with Google).</li>
+</ol>
+<p>Your account and ALL associated data (friends list, quiz/duel history, Coin/Diamond balance, notifications) are deleted <b>immediately and completely</b> - no additional retention period.</p>
+
+<h2>2. If you can't access the app</h2>
+<p>If you've uninstalled the app or otherwise can't sign in, email us with the address you registered with:</p>
+<p><a href="mailto:ilhomovasilbek7@gmail.com">ilhomovasilbek7@gmail.com</a></p>
+<p>We will delete your account manually, the same way as above.</p>
+</body>
+</html>"""
+
+
+@router.get("/delete-account", response_class=HTMLResponse, include_in_schema=False)
+async def delete_account_page() -> str:
+    return _DELETE_ACCOUNT_PAGE
