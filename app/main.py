@@ -214,12 +214,3 @@ admin.add_view(AppConfigAdmin)
 @app.get("/", tags=["Health"], summary="API holati")
 async def root():
     return {"status": "ok", "message": "Zukkor API ishlamoqda", "docs": "/docs"}
-
-
-# 2026-09-29, VAQTINCHALIK - Sentry integratsiyasini haqiqiy xato bilan
-# qo'lda tekshirish uchun (foydalanuvchi so'rovi). Tekshiruv tugagach
-# OLIB TASHLANADI - bu hech qanday himoyasiz, istalgan kishi chaqira
-# oladigan 500 xato yo'li, production'da qoldirilmasligi kerak.
-@app.get("/sentry-debug", tags=["Health"], include_in_schema=False)
-async def trigger_sentry_test_error():
-    1 / 0
