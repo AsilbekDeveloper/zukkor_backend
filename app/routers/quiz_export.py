@@ -65,8 +65,8 @@ async def _charge_export(db: AsyncSession, current_user: User, category_id: int,
 @router.get(
     "/{category_id}/export/pdf",
     summary="Quizni PDF (bosma test) sifatida eksport qilish",
-    description="Diamond bilan to'lanadi (savollar soniga qarab). Javob - "
-    "to'g'ridan-to'g'ri PDF fayl (`application/pdf`).",
+    description="Diamond bilan to'lanadi (qat'iy narx, savollar soniga "
+    "qaramaydi). Javob - to'g'ridan-to'g'ri PDF fayl (`application/pdf`).",
 )
 async def export_quiz_pdf(
     category_id: int,
@@ -92,7 +92,7 @@ async def export_quiz_pdf(
 @router.get(
     "/{category_id}/export/docx",
     summary="Quizni Word (.docx) sifatida eksport qilish",
-    description="Diamond bilan to'lanadi (savollar soniga qarab, PDF bilan bir xil narx). Javob - "
+    description="Diamond bilan to'lanadi (PDF bilan bir xil qat'iy narx). Javob - "
     "to'g'ridan-to'g'ri .docx fayl.",
 )
 async def export_quiz_docx(
