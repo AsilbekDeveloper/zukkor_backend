@@ -5,6 +5,13 @@ from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
 from app.models.quiz import Category, Question
 
+# Question.created_by_user_id -> users.id FK'sini SQLAlchemy'ga tanitish
+# uchun shart - normal ilova ishga tushganda buni routerlar o'zi import
+# qilib bergan bo'lardi, bu skript esa mustaqil ishga tushganda User
+# modeli hech qayerdan import qilinmagani uchun "NoReferencedTableError"
+# berardi.
+from app.models.user import User  # noqa: F401
+
 CATEGORIES = [
     {"name": "Tarix", "icon_name": "history", "color_key": "terra", "sort_order": 100},
     {"name": "Geografiya va Davlatlar", "icon_name": "globe", "color_key": "blue", "sort_order": 110},
@@ -1286,7 +1293,15 @@ QUESTIONS: dict[str, list[tuple[str, list[str], int]]] = {
 
 
 async def _get_or_create_category(db, meta: dict) -> Category:
-    result = await db.execute(select(Category).where(Category.name == meta["name"]))
+    # `owner_user_id.is_(None)` SHART - buning yo'qligi sabab bu funksiya
+    # bir xil nomli (masalan "Flutter") foydalanuvchi tomonidan
+    # yaratilgan SHAXSIY kategoriyani "topib", unga admin savollarini
+    # qo'shib qo'ygan edi (2026-10-02, production'da topilgan real xato -
+    # begona foydalanuvchining shaxsiy quiziga 50 ta tegishsiz savol
+    # tushib qolgan edi).
+    result = await db.execute(
+        select(Category).where(Category.name == meta["name"], Category.owner_user_id.is_(None))
+    )
     category = result.scalar_one_or_none()
     if category is not None:
         return category
