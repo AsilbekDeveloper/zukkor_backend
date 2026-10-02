@@ -244,6 +244,19 @@ class CategoryAdmin(ModelView, model=Category):
     column_sortable_list = [Category.id, Category.sort_order, Category.name]
     form_columns = [Category.name, Category.icon_name, Category.color_key, Category.sort_order, Category.is_active]
 
+    # Bu panel faqat hammaga ochiq GLOBAL kategoriyalarni (admin
+    # boshqaradigan quiz bankini) ko'rsatishi kerak - `owner_user_id`
+    # filtrsiz bo'lsa, har bir foydalanuvchining AI/qo'lda yaratgan
+    # SHAXSIY quizlari ham xuddi shu ro'yxatga aralashib, haqiqiy
+    # kategoriyalarni yo'qotib yuborardi (2026-10-02, admin shu holatni
+    # topdi - "jizzax", "laptop", "uzb" kabi shaxsiy quiz nomlari global
+    # kategoriyalar qatorida ko'rinib turardi).
+    def list_query(self, request):
+        return super().list_query(request).where(Category.owner_user_id.is_(None))
+
+    def count_query(self, request):
+        return super().count_query(request).where(Category.owner_user_id.is_(None))
+
 
 class QuestionAdmin(ModelView, model=Question):
     """"Kill Switch" - AI (avtomatik moderatsiya YOKI AI-generatsiya orqali)
