@@ -1,18 +1,24 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.dependencies.auth import get_current_user
-from app.models.duel import DuelAnswer
+from app.models.duel import Duel, DuelAnswer
 from app.models.friendship import Friendship
 from app.models.lobby_game import LobbyGame, LobbyGameResult
 from app.models.quiz import Answer, Category, QuizSession, SessionQuestion
 from app.models.user import User
 from app.models.xp_event import XpEvent
-from app.schemas.leaderboard import LeaderboardOut, PlayerStatsOut, RankEntryOut
+from app.schemas.leaderboard import (
+    CategoryLeaderboardOut,
+    CategoryRankEntryOut,
+    LeaderboardOut,
+    PlayerStatsOut,
+    RankEntryOut,
+)
 from app.services.leveling import compute_level
 from app.services.streak import TASHKENT_OFFSET
 
@@ -85,6 +91,77 @@ def _friends_ranked_subquery(current_user_id: str):
     )
 
 
+def _category_xp_subquery(category_id: int, since: datetime | None):
+    """Berilgan kategoriyada har bir foydalanuvchi to'plagan XP'ni uchala
+    o'yin rejimidan (yakka, Duel, Xona) yig'ib, UNION ALL orqali birlashtiradi
+    - `get_player_stats`dagi g'alaba foizi hisob-kitobi bilan bir xil naqsh
+    (uchala manbani ham hisobga olish), faqat umumiy emas, shu kategoriya
+    bo'yicha filtrlangan holda."""
+    solo = select(QuizSession.user_id.label("uid"), QuizSession.total_xp_earned.label("xp")).where(
+        QuizSession.category_id == category_id
+    )
+    duel_a = select(Duel.user_a_id.label("uid"), Duel.user_a_xp.label("xp")).where(
+        Duel.category_id == category_id, Duel.status == "finished"
+    )
+    duel_b = select(Duel.user_b_id.label("uid"), Duel.user_b_xp.label("xp")).where(
+        Duel.category_id == category_id, Duel.status == "finished"
+    )
+    lobby = (
+        select(LobbyGameResult.user_id.label("uid"), LobbyGameResult.xp.label("xp"))
+        .select_from(LobbyGameResult)
+        .join(LobbyGame, LobbyGame.id == LobbyGameResult.lobby_game_id)
+        .where(LobbyGame.category_id == category_id)
+    )
+
+    if since is not None:
+        solo = solo.where(QuizSession.finished_at >= since)
+        duel_a = duel_a.where(Duel.finished_at >= since)
+        duel_b = duel_b.where(Duel.finished_at >= since)
+        lobby = lobby.where(LobbyGame.finished_at >= since)
+
+    combined = union_all(solo, duel_a, duel_b, lobby).subquery()
+    return (
+        select(combined.c.uid, func.coalesce(func.sum(combined.c.xp), 0).label("category_xp"))
+        .group_by(combined.c.uid)
+        .subquery()
+    )
+
+
+def _category_ranked_subquery(category_id: int, since: datetime | None):
+    xp_subq = _category_xp_subquery(category_id, since)
+    return (
+        select(
+            User.id,
+            User.username,
+            User.first_name,
+            User.last_name,
+            User.avatar_color,
+            User.avatar_image_path,
+            xp_subq.c.category_xp,
+            func.row_number()
+            .over(order_by=(xp_subq.c.category_xp.desc(), User.created_at.asc(), User.id.asc()))
+            .label("rank"),
+        )
+        .join(xp_subq, xp_subq.c.uid == User.id)
+        .where(User.is_active.is_(True))
+        .subquery()
+    )
+
+
+def _category_rank_entry_out(row, current_user_id: str) -> CategoryRankEntryOut:
+    return CategoryRankEntryOut(
+        user_id=row.id,
+        rank=row.rank,
+        username=row.username,
+        first_name=row.first_name,
+        last_name=row.last_name,
+        avatar_color=row.avatar_color,
+        avatar_image_path=row.avatar_image_path,
+        category_xp=row.category_xp,
+        is_me=row.id == current_user_id,
+    )
+
+
 def _rank_entry_out(row, current_user_id: str) -> RankEntryOut:
     level, level_title, next_level_xp, _current_level_xp = compute_level(row.total_xp)
     return RankEntryOut(
@@ -148,6 +225,62 @@ async def get_leaderboard(
     return LeaderboardOut(
         entries=[_rank_entry_out(row, current_user.id) for row in top_rows],
         me=_rank_entry_out(me_row, current_user.id),
+        has_more=has_more,
+    )
+
+
+@router.get(
+    "/category/{category_id}",
+    response_model=CategoryLeaderboardOut,
+    summary="Kategoriya bo'yicha reyting",
+)
+async def get_category_leaderboard(
+    category_id: int,
+    limit: int = 20,
+    offset: int = 0,
+    scope: str = "all_time",
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if scope not in VALID_SCOPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"scope quyidagilardan biri bo'lishi kerak: {VALID_SCOPES}",
+        )
+
+    category = await db.get(Category, category_id)
+    if category is None or not category.is_active:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kategoriya topilmadi")
+
+    limit = min(max(limit, 1), 100)
+    offset = max(offset, 0)
+
+    since = datetime.now(timezone.utc) - timedelta(days=7) if scope == "weekly" else None
+    ranked = _category_ranked_subquery(category_id, since)
+
+    if scope == "friends":
+        friend_ids_subq = select(Friendship.friend_id).where(Friendship.user_id == current_user.id)
+        base_stmt = select(ranked).where(
+            or_(ranked.c.id == current_user.id, ranked.c.id.in_(friend_ids_subq))
+        )
+        all_rows = (await db.execute(base_stmt.order_by(ranked.c.rank).limit(1000))).all()
+        filtered = [row for row in all_rows if row.id != current_user.id]
+        top_rows = filtered[offset : offset + limit]
+        has_more = len(filtered) > offset + limit
+    else:
+        rows = (
+            await db.execute(select(ranked).order_by(ranked.c.rank).offset(offset).limit(limit + 1))
+        ).all()
+        has_more = len(rows) > limit
+        top_rows = rows[:limit]
+
+    me_row = (await db.execute(select(ranked).where(ranked.c.id == current_user.id))).first()
+
+    return CategoryLeaderboardOut(
+        category_id=category.id,
+        category_name=category.name,
+        entries=[_category_rank_entry_out(row, current_user.id) for row in top_rows],
+        me=_category_rank_entry_out(me_row, current_user.id) if me_row is not None else None,
         has_more=has_more,
     )
 
