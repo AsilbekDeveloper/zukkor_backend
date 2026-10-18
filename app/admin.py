@@ -62,6 +62,10 @@ _ANALYTICS_PAGE = """<!DOCTYPE html>
 <div class="cards">
 {ai_cards}
 </div>
+<h2>Taklif voronkasi</h2>
+<div class="cards">
+{referral_cards}
+</div>
 <p style="margin-top: 32px;"><a href="/admin/">← Admin panelga qaytish</a></p>
 </body>
 </html>"""
@@ -98,8 +102,21 @@ def _render_analytics_page(stats: AdminAnalytics) -> str:
             _card("Muvaffaqiyatsiz generatsiya", stats.ai_jobs_failed),
         ]
     )
+    referral_cards = "".join(
+        [
+            _card("Havola ochilishi", stats.referral_clicks),
+            _card("Kod bilan ro'yxatdan o'tgan", stats.referral_registrations),
+            _card("Mukofot berilgan (sifatli o'yin)", stats.referral_rewarded),
+            _card("To'langan Coin", stats.referral_coins_paid),
+            _card("To'langan Diamond", stats.referral_diamonds_paid),
+        ]
+    )
     return _ANALYTICS_PAGE.format(
-        cards=cards, top_categories_rows=top_categories_rows, export_cards=export_cards, ai_cards=ai_cards,
+        cards=cards,
+        top_categories_rows=top_categories_rows,
+        export_cards=export_cards,
+        ai_cards=ai_cards,
+        referral_cards=referral_cards,
     )
 
 
@@ -460,6 +477,9 @@ class QuestionSubmissionAdmin(ModelView, model=QuestionSubmission):
                 db.add(new_question)
                 await db.flush()
                 new_question_id = new_question.id
+                author = await db.get(User, model.submitter_user_id)
+                if author is not None:
+                    await wallet.award_question_approved_bonus(db, author, new_question_id)
                 await db.commit()
 
             data["resulting_question_id"] = new_question_id

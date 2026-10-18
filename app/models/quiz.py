@@ -18,7 +18,7 @@ class Category(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     # Shu kategoriyadan necha marta savol o'ynalgani (Solo+Duel+Lobby
-    # yig'indisi) - `app.services.wallet.charge_for_question_play`
+    # yig'indisi) - `app.services.wallet.record_question_play`
     # tomonidan har bir savol-javobda ATOMIK oshiriladi. Home ekranidagi
     # "eng ko'p o'ynalgan 3 ta kategoriya"ni aniqlash uchun (2026-09-28).
     play_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -75,10 +75,8 @@ class Question(Base):
 
     # Kim qo'shgan (foydalanuvchi taklifi orqali tasdiqlangan savol uchun) -
     # NULL bo'lsa rasmiy/admin savoli (yoki bu ustun qo'shilishidan oldingi
-    # eski qator). `app.services.wallet.charge_for_question_play` shu
-    # yordamida savol o'ynalganda sarflangan Coinning bir qismini
-    # muallifga to'laydi - o'z-o'ziga to'lov bo'lmasligi uchun chaqiruvchi
-    # tomonda `created_by_user_id == player.id` alohida tekshiriladi.
+    # eski qator). Muallif tasdiqlanganda bir martalik bonus oladi
+    # (`wallet.award_question_approved_bonus`).
     created_by_user_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )

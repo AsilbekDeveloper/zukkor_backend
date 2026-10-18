@@ -3,12 +3,11 @@
 
 Ikkita valyuta, hech qachon aralashmaydi:
 - Coin (yumshoq) - faqat ilova ichi faollik orqali topiladi (sotib
-  olinmaydi). 2026-09-12'dan boshlab sarflash tomoni ham bor: har bir
-  o'ynalgan savol o'yinchidan bir necha Coin oladi, shundan bir qismi
-  savol muallifiga (foydalanuvchi taklif qilgan bo'lsa) to'lanadi -
-  `charge_for_question_play`ga qarang. Barcha miqdorlar (bonuslar,
-  savol narxi, muallif ulushi) `economy_config` orqali admin panelidan
-  o'zgartiriladi, qayta deploy shart emas.
+  olinmaydi, pulga aylanmaydi, o'yinchilar o'rtasida hech qachon
+  o'tmaydi). Yakka o'yinda to'g'ri javob +1 / xato -1
+  (`apply_solo_answer_coins`), duel g'olibiga tizimdan bonus, tasdiqlangan
+  savol muallifiga bir martalik bonus. Barcha miqdorlar `economy_config`
+  orqali admin panelidan o'zgartiriladi, qayta deploy shart emas.
 - Diamond (qattiq) - ro'yxatdan o'tganda bepul boshlang'ich miqdor
   beriladi, keyin faqat Payme/Click (Telegram bot orqali, keyinroq)
   sotib olinadi. FAQAT AI-generatsiya narxini to'lashga sarflanadi,
@@ -25,11 +24,12 @@ import secrets
 import string
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import case, select, update as sql_update
+from sqlalchemy import case, func, select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.currency_transaction import CurrencyTransaction
+from app.models.question_coin_award import QuestionCoinAward
 from app.models.quiz import Category, Question
 from app.models.user import User
 from app.services import economy_config
@@ -131,7 +131,7 @@ async def apply_atomic_balance_delta(
 
     balance_after = row[0]
     # ORM obyektini yangi qiymat bilan sinxronlaymiz - shu funksiyadan
-    # KEYIN kod (masalan `charge_for_question_play`ning o'zi) darhol
+    # KEYIN kod (masalan `apply_solo_answer_coins`ning o'zi) darhol
     # `user.coin_balance`ni o'qisa, eskirgan emas, aynan hozir yozilgan
     # qiymatni ko'rsin.
     setattr(user, f"{currency}_balance", balance_after)
@@ -299,72 +299,61 @@ async def charge_diamond_for_export(db: AsyncSession, user: User, amount: int, *
     await _record(db, user, currency="diamond", amount=-amount, reason="quiz_export", extra=extra, require_sufficient=True)
 
 
-# --- Duel stavkasi (2026-09-17, anti-farming/inflyatsiya himoyasi) ---
+# --- Duel g'olibi bonusi ---
 #
-# UCHALASI HAM FAQAT "coin" valyutasi bilan ishlaydi - `currency`
-# parametri yo'q, ataylab qattiq kodlangan. Duel yutug'i hech qachon
-# Diamond bermasligi shu bilan STRUKTURAVIY ravishda kafolatlanadi (bu
-# funksiyalarni chaqirib Diamond berish shunchaki MUMKIN EMAS), izohga
-# tayanadigan konvensiya emas. Diamond `app/routers/ai_quiz.py` (AI-
-# generatsiya) va `app/routers/quiz_export.py` (PDF eksport) orqali
-# harakatlanadi - Duel bilan hech qachon aralashmaydi.
+# 2026-10-14, foydalanuvchi qarori: duelda stavka YO'Q (o'yinchilar
+# o'rtasida Coin hech qachon o'tmaydi). G'olib bonusni tizimdan oladi,
+# mag'lub hech narsa yo'qotmaydi.
 
 
-async def charge_duel_stake(db: AsyncSession, user: User, amount: int) -> None:
-    """Anti-Rage-Quit: duel ACTIVE bo'lishi BILANOQ (`duel_engine.start_duel`,
-    savollar tanlanishidan HAM oldin) ikkala o'yinchidan ham stavkani
-    ATOMIK ravishda yechadi (`_record(require_sufficient=True)` - xuddi
-    `charge_for_question_play`dagi kabi, DB darajasidagi qulf orqali
-    poyga holatisiz). Shu bosqichda pul allaqachon "band" - o'yin
-    o'rtasida kimdir chiqib ketsa/aloqasi uzilsa, qaytarish degan alohida
-    mantiq SHART EMAS: chiquvchi shunchaki hech narsa qaytarib olmaydi
-    (`duel_engine.forfeit_duel`ga qarang).
-
-    Yetarli bo'lmasa `InsufficientBalanceError` ko'taradi - chaqiruvchi
-    buni duel UMUMAN boshlanmasligiga aylantiradi. Chaqiruvchi COMMIT
-    qilishi kerak."""
-    await _record(db, user, currency="coin", amount=-abs(amount), reason="duel_stake", require_sufficient=True)
+def _tashkent_day_start_utc(now_utc: datetime) -> datetime:
+    local_now = now_utc + TASHKENT_OFFSET
+    local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return local_midnight - TASHKENT_OFFSET
 
 
-async def refund_duel_stake(db: AsyncSession, user: User, amount: int, reason: str = "duel_stake_refund") -> None:
-    """Stavkani TO'LIQ qaytaradi - duel DURANG bilan tugaganda (ikkala
-    tomon ham o'zining tikkan puli bilan qoladi, soliqsiz) yoki duel
-    umuman boshlanmay qolganda (masalan kategoriyada savol topilmadi).
-    Chaqiruvchi COMMIT qilishi kerak."""
-    await credit_coin(db, user, amount, reason)
+async def award_duel_win_bonus(db: AsyncSession, winner: User, duel_id: str) -> int:
+    """G'olibga `DUEL_WIN_BONUS` beradi - bugun (Toshkent kuni) allaqachon
+    `DUEL_WIN_BONUS_DAILY_LIMIT` marta olgan bo'lsa, hech narsa bermaydi
+    (ikkita hamkorlashgan akkaunt navbat bilan ataylab yutqazib, cheksiz
+    Coin yig'masligi uchun). Berilgan miqdorni qaytaradi. Chaqiruvchi
+    COMMIT qilishi kerak."""
+    bonus = await economy_config.get_int(db, economy_config.DUEL_WIN_BONUS)
+    if bonus <= 0:
+        return 0
 
-
-async def award_duel_prize(db: AsyncSession, winner: User, stake_per_player: int, tax_percent: int) -> int:
-    """Anti-Farming/Deflyatsiya: g'olibga yutuq fondini (ikkala
-    o'yinchining stavkasi yig'indisi) TO'LIQ EMAS - `tax_percent` ulush
-    ushlab qolingandan (BURN qilingandan) keyin beradi. Ushlab qolingan
-    qism HECH KIMGA yozilmaydi va hech qanday CurrencyTransaction'da
-    ko'rinmaydi - tizimdagi umumiy Coin miqdoridan butunlay yo'q bo'ladi
-    (aks holda ikkita hamkorlashgan akkaunt bitta doim ATAYLAB yutqazib,
-    bir-biriga cheksiz va bepul Coin ko'chirishi mumkin bo'lardi - bu
-    soliq shu yo'lni yopadi).
-
-    Xuddi shu soliq FORFEIT (raqib chiqib ketgan) holatida ham qo'llanadi
-    (`duel_engine.forfeit_duel`) - aks holda ikkita hamkorlashgan akkaunt
-    "duel boshlab, birortasi ataylab chiqib ketish" orqali soliqni
-    butunlay aylanib o'tishi mumkin bo'lardi.
-
-    G'olibga yozilgan yakuniy Coin miqdorini qaytaradi (Duel natijasi
-    xabarida ko'rsatish uchun). Chaqiruvchi COMMIT qilishi kerak."""
-    pool = stake_per_player * 2
-    tax = (pool * tax_percent) // 100
-    payout = pool - tax
-    await credit_coin(
-        db, winner, payout, "duel_prize",
-        extra={"pool": pool, "tax_percent": tax_percent, "tax": tax},
+    daily_limit = await economy_config.get_int(db, economy_config.DUEL_WIN_BONUS_DAILY_LIMIT)
+    day_start = _tashkent_day_start_utc(datetime.now(timezone.utc))
+    count_result = await db.execute(
+        select(func.count())
+        .select_from(CurrencyTransaction)
+        .where(
+            CurrencyTransaction.user_id == winner.id,
+            CurrencyTransaction.reason == "duel_win_bonus",
+            CurrencyTransaction.created_at >= day_start,
+        )
     )
-    return payout
+    if count_result.scalar_one() >= daily_limit:
+        return 0
+
+    return await credit_coin(db, winner, bonus, "duel_win_bonus", extra={"duel_id": duel_id})
+
+
+async def award_question_approved_bonus(db: AsyncSession, author: User, question_id: int) -> int:
+    """Taklif qilingan savol tasdiqlanganda muallifga bir martalik bonus.
+    Chaqiruvchi har bir savol uchun faqat bir marta chaqirishi kerak
+    (tasdiqlash holatiga birinchi o'tishda). Chaqiruvchi COMMIT qilishi
+    kerak."""
+    bonus = await economy_config.get_int(db, economy_config.QUESTION_APPROVED_BONUS)
+    if bonus <= 0:
+        return 0
+    return await credit_coin(db, author, bonus, "question_approved", extra={"question_id": question_id})
 
 
 async def debit_coin(db: AsyncSession, user: User, amount: int, reason: str, extra: dict | None = None) -> None:
     """Coin yechish - balans yetarli bo'lmasa ham manfiyga tushiradi.
     Balans HECH QACHON manfiyga tushmasligi kerak bo'lgan chaqiruvchilar
-    (masalan `charge_for_question_play`) buning o'rniga `_record`ni
+    (masalan `apply_solo_answer_coins`) buning o'rniga `_record`ni
     `require_sufficient=True` bilan to'g'ridan-to'g'ri chaqiradi."""
     await _record(db, user, currency="coin", amount=-abs(amount), reason=reason, extra=extra)
 
@@ -431,14 +420,10 @@ async def on_game_finished(
     db: AsyncSession,
     user: User,
     played_at: datetime,
-    *,
-    is_first_game_ever: bool,
 ) -> None:
     """Solo/Duel/Lobby - HAR BIR o'yin tugash joyida `update_streak(user,
     played_at)` o'rniga shu chaqiriladi (streak+coin bonuslarini birgalikda
-    hisoblash uchun, ular bir xil "kun" mantig'iga bog'liq). Chaqiruvchi
-    o'zi `user.games_played += 1`ni ALLAQACHON bajargan bo'lishi kerak -
-    `is_first_game_ever` shu bilan hisoblanadi (`games_played == 1`)."""
+    hisoblash uchun, ular bir xil "kun" mantig'iga bog'liq)."""
     old_streak = user.current_streak
     update_streak(user, played_at)
 
@@ -457,77 +442,119 @@ async def on_game_finished(
         streak_bonus = await economy_config.get_int(db, economy_config.STREAK_BONUS_7D)
         await credit_coin(db, user, streak_bonus, "streak_bonus_7d", extra={"streak": user.current_streak})
 
-    # Referral bonusi - taklif qilingan do'stning ENG BIRINCHI o'yini
-    # tugagach, taklif qilganga beriladi. Cheklovsiz (foydalanuvchining
-    # ochiq qarori).
-    if is_first_game_ever and user.referred_by_user_id:
-        referrer = await db.get(User, user.referred_by_user_id)
-        if referrer is not None:
-            referral_bonus = await economy_config.get_int(db, economy_config.REFERRAL_BONUS)
-            await credit_coin(db, referrer, referral_bonus, "referral", extra={"referred_user_id": user.id})
 
-
-async def charge_for_question_play(db: AsyncSession, player: User, question_id: int) -> None:
-    """Solo/Duel/Lobby'ning har UCHALASIDA ham, o'yinchi bitta savolga
-    javob bergan har safar chaqiriladi (2026-09-12 qaror - "gold coin
-    faqat ilova ichida ishlab topiladi", sarflash tomoni).
-
-    O'yinchidan bitta savol narxini yechadi; agar shu savol biror
-    foydalanuvchi tomonidan qo'shilgan bo'lsa (`Question.created_by_user_id`,
-    taklif qilib tasdiqlangan savollar), narxning bir qismini o'sha
-    muallifga to'laydi - o'zining o'z savoliga javob berishi hisobga
-    olinmaydi (aks holda cheksiz coin fermalash imkoni bo'lardi).
-
-    Balans yetarli bo'lmasa HECH NARSA qilinmaydi (na o'yinchidan
-    yechiladi, na muallifga to'lanadi) - o'yin hech qachon
-    bloklanmaydi va balans manfiyga tushmaydi, savol shunchaki
-    "bepul" o'tadi. Bu tekshiruv ATOMIK (`_record`ning
-    `require_sufficient=True`si) - ikkita parallel savol-javob (masalan
-    Lobby'da bir necha ishtirokchi, yoki bitta user 2 ta qurilmadan)
-    balansni bir vaqtda yechishga urinsa ham, DB darajasidagi qulf
-    tufayli ikkalasi ham "yetarli" deb noto'g'ri o'tib keta olmaydi
-    (avvalgi Python darajasidagi `player.coin_balance < cost` tekshiruvi
-    poyga holatiga ochiq edi - 2026-09-13 audit topilmasi).
-
-    2026-09-28: shu yerda savolning kategoriyasi uchun `play_count`ni
-    ham ATOMIK oshiradi (Home ekranidagi "eng ko'p o'ynalgan 3 ta
-    kategoriya"ni aniqlash uchun) - pastdagi `COIN_COST_PER_QUESTION == 0`
-    erta qaytishidan OLDIN, chunki bu iqtisodiy emas, sof analitika: narx
-    0ga o'rnatilgan bo'lsa ham savol haqiqatda o'ynalgani hisoblanishi
-    kerak."""
+async def record_question_play(db: AsyncSession, question_id: int) -> None:
+    """Solo/Duel/Lobby'ning har uchalasida ham, o'yinchi bitta savolga
+    javob bergan har safar chaqiriladi - faqat analitika (kategoriyaning
+    `play_count`i, Home'dagi "eng ko'p o'ynalgan" ro'yxati uchun), Coin
+    bilan aloqasi yo'q."""
     await _record_category_play(db, question_id)
 
-    cost = await economy_config.get_int(db, economy_config.COIN_COST_PER_QUESTION)
-    if cost <= 0:
-        return
 
-    try:
-        await _record(
-            db, player, currency="coin", amount=-cost, reason="question_play",
-            extra={"question_id": question_id}, require_sufficient=True,
+async def apply_solo_answer_coins(
+    db: AsyncSession,
+    player: User,
+    question_id: int,
+    *,
+    session_id: str,
+    category: Category,
+    is_correct: bool,
+) -> int:
+    """Yakka o'yindagi bitta javob uchun Coin (2026-10-14 qarori). Faqat
+    rasmiy kategoriyalarda ishlaydi - foydalanuvchi/AI quizlarida Coin
+    berilmaydi ham, olinmaydi ham.
+
+    - To'g'ri javob: `CORRECT_ANSWER_COINS`, lekin shu savolga umrida
+      faqat BIR marta (`QuestionCoinAward`) - yod olingan savollarni
+      qayta o'ynab fermalab bo'lmaydi.
+    - Xato javob (yoki vaqt tugashi): `WRONG_ANSWER_PENALTY_COINS`
+      ayiriladi; balans yetarli bo'lmasa hech narsa ayirilmaydi (balans
+      hech qachon manfiyga tushmaydi).
+
+    Ledger'ga HAR JAVOB uchun alohida qator EMAS, butun o'yin uchun
+    BITTA qator yoziladi (id = sessiya id'si, `reason="solo_game"`) -
+    har javobda shu qator yangilanadi, shuning uchun o'yin yarim yo'lda
+    tashlab ketilsa ham ledger balansga mos qoladi. Qatorning `extra`ida
+    nima uchun qancha o'zgargani turadi (to'g'ri/xato/takroriy soni).
+
+    Haqiqatda o'zgargan miqdorni qaytaradi (+1 / -1 / 0) - klient
+    javobdan keyin shuni ko'rsatadi. Chaqiruvchi COMMIT qilishi kerak."""
+    if category.owner_user_id is not None:
+        return 0
+
+    balance_before = player.coin_balance
+    outcome = "repeat"  # coin o'zgarmagan javob: savol avval ham to'g'ri topilgan
+
+    if is_correct:
+        already_rewarded = (
+            await db.execute(
+                select(QuestionCoinAward.id).where(
+                    QuestionCoinAward.user_id == player.id, QuestionCoinAward.question_id == question_id
+                )
+            )
+        ).scalar_one_or_none() is not None
+        reward = await economy_config.get_int(db, economy_config.CORRECT_ANSWER_COINS)
+        if not already_rewarded and reward > 0:
+            db.add(QuestionCoinAward(user_id=player.id, question_id=question_id))
+            await apply_atomic_balance_delta(db, player, currency="coin", amount=reward)
+            outcome = "correct"
+    else:
+        outcome = "wrong"
+        penalty = await economy_config.get_int(db, economy_config.WRONG_ANSWER_PENALTY_COINS)
+        if penalty > 0:
+            try:
+                await apply_atomic_balance_delta(
+                    db, player, currency="coin", amount=-penalty, require_sufficient=True
+                )
+            except InsufficientBalanceError:
+                pass  # balans 0 - hech narsa ayirilmaydi
+
+    delta = player.coin_balance - balance_before
+    await _upsert_solo_game_row(db, player, session_id=session_id, category=category, outcome=outcome, delta=delta)
+    return delta
+
+
+async def _upsert_solo_game_row(
+    db: AsyncSession, player: User, *, session_id: str, category: Category, outcome: str, delta: int
+) -> None:
+    """Bitta yakka o'yinning butun Coin harakati uchun yagona ledger qatori
+    (`apply_solo_answer_coins`ga qarang). Coin hech qachon o'zgarmagan
+    o'yin uchun qator yaratilmaydi."""
+    row = await db.get(CurrencyTransaction, session_id)
+    if row is None:
+        if delta == 0:
+            return
+        row = CurrencyTransaction(
+            id=session_id,
+            user_id=player.id,
+            currency="coin",
+            amount=0,
+            reason="solo_game",
+            balance_after=player.coin_balance,
+            extra={
+                "category_id": category.id,
+                "category_name": category.name,
+                "correct": 0,
+                "wrong": 0,
+                "repeat": 0,
+                "coins_up": 0,
+                "coins_down": 0,
+            },
         )
-    except InsufficientBalanceError:
-        return
+        db.add(row)
 
-    question = await db.get(Question, question_id)
-    author_id = question.created_by_user_id if question is not None else None
-    if author_id is None or author_id == player.id:
-        return
-
-    author = await db.get(User, author_id)
-    if author is None:
-        return
-
-    share_percent = await economy_config.get_int(db, economy_config.QUESTION_AUTHOR_SHARE_PERCENT)
-    payout = (cost * share_percent) // 100
-    if payout > 0:
-        await credit_coin(
-            db, author, payout, "question_royalty", extra={"question_id": question_id, "payer_user_id": player.id}
-        )
-
+    extra = dict(row.extra or {})  # JSON ustunini yangilash uchun yangi dict kerak
+    extra[outcome] = extra.get(outcome, 0) + 1
+    if delta > 0:
+        extra["coins_up"] = extra.get("coins_up", 0) + delta
+    elif delta < 0:
+        extra["coins_down"] = extra.get("coins_down", 0) - delta
+    row.extra = extra
+    row.amount = (row.amount or 0) + delta
+    row.balance_after = player.coin_balance
 
 async def _record_category_play(db: AsyncSession, question_id: int) -> None:
-    """`charge_for_question_play`ning yordamchisi - ATOMIK bitta SQL
+    """`record_question_play`ning yordamchisi - ATOMIK bitta SQL
     `UPDATE ... SET play_count = play_count + 1` (Python darajasida
     o'qib-yozish emas, xuddi `apply_atomic_balance_delta`dagi kabi -
     ko'plab parallel o'yinchilar bir xil kategoriyani bir vaqtda o'ynasa

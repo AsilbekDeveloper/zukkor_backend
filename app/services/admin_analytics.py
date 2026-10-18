@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.ai_quiz_job import AiQuizGenerationJob
 from app.models.currency_transaction import CurrencyTransaction
 from app.models.quiz import Category
+from app.models.referral import ReferralClick, ReferralReward
 from app.models.user import User
 from app.services.streak import TASHKENT_OFFSET
 
@@ -48,6 +49,11 @@ class AdminAnalytics:
     export_diamond_spent_30d: int
     ai_jobs_completed: int
     ai_jobs_failed: int
+    referral_clicks: int
+    referral_registrations: int
+    referral_rewarded: int
+    referral_coins_paid: int
+    referral_diamonds_paid: int
 
 
 async def compute_analytics(db: AsyncSession) -> AdminAnalytics:
@@ -100,6 +106,20 @@ async def compute_analytics(db: AsyncSession) -> AdminAnalytics:
         await db.execute(select(func.count(AiQuizGenerationJob.id)).where(AiQuizGenerationJob.status == "failed"))
     ).scalar_one()
 
+    referral_clicks = (await db.execute(select(func.count(ReferralClick.id)))).scalar_one()
+    referral_registrations = (
+        await db.execute(select(func.count(User.id)).where(User.referred_by_user_id.is_not(None)))
+    ).scalar_one()
+    referral_totals = (
+        await db.execute(
+            select(
+                func.count(),
+                func.coalesce(func.sum(ReferralReward.referrer_coins + ReferralReward.referred_coins), 0),
+                func.coalesce(func.sum(ReferralReward.referrer_diamonds + ReferralReward.referred_diamonds), 0),
+            )
+        )
+    ).one()
+
     return AdminAnalytics(
         total_users=total_users,
         active_users=active_users,
@@ -113,4 +133,9 @@ async def compute_analytics(db: AsyncSession) -> AdminAnalytics:
         export_diamond_spent_30d=export_diamond_spent,
         ai_jobs_completed=ai_completed,
         ai_jobs_failed=ai_failed,
+        referral_clicks=referral_clicks,
+        referral_registrations=referral_registrations,
+        referral_rewarded=referral_totals[0],
+        referral_coins_paid=referral_totals[1],
+        referral_diamonds_paid=referral_totals[2],
     )

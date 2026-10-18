@@ -127,6 +127,13 @@ class Settings(BaseSettings):
     # Telegram buni idempotent qiladi), qo'lda buyruq yuborish shart emas.
     TELEGRAM_WEBHOOK_URL: str = ""
 
+    # Taklif (referral) havolasining ommaviy bazaviy manzili (masalan
+    # "https://zukkor-production.up.railway.app", keyinroq "https://zukkor.uz").
+    # Bo'sh bo'lsa so'rovning o'z manzilidan olinadi.
+    PUBLIC_BASE_URL: str = ""
+    # Play Store havolasi (`referrer=` parametri bilan) shu paket uchun tuziladi.
+    ANDROID_PACKAGE_ID: str = "com.zukkor.app"
+
     model_config = {"env_file": ".env", "extra": "ignore"}
 
     @field_validator("DATABASE_URL")

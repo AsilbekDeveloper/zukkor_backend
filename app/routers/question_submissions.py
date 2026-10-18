@@ -11,6 +11,7 @@ from app.models.question_submission import QuestionSubmission
 from app.models.quiz import Category, Question
 from app.models.user import User
 from app.schemas.ai_quiz import QuestionSubmissionRequest, QuestionSubmissionResponse, SubmissionAppealResponse
+from app.services import wallet
 from app.services.question_moderation import QuestionModerationError, moderate_question
 from app.services.streak import TASHKENT_OFFSET
 
@@ -18,11 +19,9 @@ router = APIRouter()
 
 # Bir kunda tasdiqlanadigan savollar soni chegarasi - bo'lmasa, bitta
 # foydalanuvchi ko'p sonli past-sifatli (lekin AI moderatsiyasidan
-# o'tadigan) savol qo'shib, keyin ularni (yolg'on/bir nechta akkaunt
-# orqali) o'ynatib `question_royalty` Coin'ini fermalashi mumkin edi
-# (2026-09-13 prod-tayyorlik auditi topilmasi). `/submit`ning o'zi
-# 5/minute bilan cheklangan, lekin bu FAQAT tezlikni, umumiy sonni
-# cheklamaydi.
+# o'tadigan) savol qo'shib, tasdiqlash bonusini fermalashi mumkin edi.
+# `/submit`ning o'zi 5/minute bilan cheklangan, lekin bu FAQAT tezlikni,
+# umumiy sonni cheklamaydi.
 MAX_APPROVED_SUBMISSIONS_PER_DAY = 10
 
 
@@ -180,6 +179,7 @@ async def submit_question(
     submission.resulting_category_id = result.category_id
     submission.resulting_question_id = new_question.id
     db.add(submission)
+    await wallet.award_question_approved_bonus(db, current_user, new_question.id)
     await db.commit()
 
     category_name = next((name for category_id, name in categories if category_id == result.category_id), None)

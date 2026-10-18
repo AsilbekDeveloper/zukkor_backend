@@ -61,6 +61,8 @@ class AnswerResponse(BaseModel):
     correct: bool
     correct_option_index: int
     ball_earned: int
+    # Shu javob uchun haqiqatda o'zgargan Coin (+1 / -1 / 0).
+    coin_delta: int = 0
     next_question: QuestionOut | None = None
     session_complete: bool | None = None
     summary: QuizSummary | None = None

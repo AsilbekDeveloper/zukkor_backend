@@ -24,7 +24,7 @@ from app.schemas.quiz import (
 from app.services.quiz_access import can_access_category
 from app.services.scoring import calculate_ball, compute_time_limit_ms
 from app.services.xp_award import compute_xp_eligible_ball
-from app.services import wallet
+from app.services import referral, wallet
 
 router = APIRouter()
 
@@ -195,7 +195,11 @@ async def answer_question(
             answered_at=now,
         )
     )
-    await wallet.charge_for_question_play(db, current_user, question.id)
+    await wallet.record_question_play(db, question.id)
+    category = await db.get(Category, session.category_id)
+    coin_delta = await wallet.apply_solo_answer_coins(
+        db, current_user, question.id, session_id=session_id, category=category, is_correct=is_correct
+    )
 
     if session_question.order < session_question.total:
         used_result = await db.execute(
@@ -233,6 +237,7 @@ async def answer_question(
             correct=is_correct,
             correct_option_index=shuffled_correct_index,
             ball_earned=ball,
+            coin_delta=coin_delta,
             next_question=QuestionOut(
                 session_question_id=next_session_question.id,
                 question_text=next_question.question_text,
@@ -264,7 +269,6 @@ async def answer_question(
         for answer, order, question_text, question_id in all_rows
     ]
 
-    category = await db.get(Category, session.category_id)
     xp_eligible_ball = await compute_xp_eligible_ball(
         db,
         current_user.id,
@@ -278,8 +282,11 @@ async def answer_question(
 
     current_user.total_xp += xp_earned
     current_user.games_played += 1
-    await wallet.on_game_finished(db, current_user, now, is_first_game_ever=current_user.games_played == 1)
+    await wallet.on_game_finished(db, current_user, now)
     db.add(XpEvent(user_id=current_user.id, amount=xp_earned))
+    referral_reward = await referral.award_if_qualified(
+        db, current_user, category=category, question_count=session_question.total
+    )
 
     try:
         await db.commit()
@@ -289,10 +296,14 @@ async def answer_question(
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bu savolga allaqachon javob berilgan")
 
+    if referral_reward is not None:
+        await referral.notify_referrer(db, referral_reward)
+
     return AnswerResponse(
         correct=is_correct,
         correct_option_index=shuffled_correct_index,
         ball_earned=ball,
+        coin_delta=coin_delta,
         session_complete=True,
         summary=QuizSummary(
             total_ball=total_ball,

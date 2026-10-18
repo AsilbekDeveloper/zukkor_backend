@@ -12,7 +12,7 @@ from app.models.xp_event import XpEvent
 from app.services.xp_award import compute_xp_eligible_ball
 from app.services.scoring import calculate_ball, compute_time_limit_ms
 from app.services.ws_manager import manager
-from app.services import economy_config, wallet
+from app.services import referral, wallet
 
 DEFAULT_TOTAL_QUESTIONS = 10
 # Endi har bir savol o'zining matn/variant uzunligiga qarab vaqt oladi
@@ -42,13 +42,6 @@ class _ActiveDuel:
         self.user_b_id = user_b_id
         self.category_id = category_id
         self.total_questions = total_questions
-
-        # Duel ACTIVE bo'lganda (`start_duel`) ikkala o'yinchidan ham
-        # ALLAQACHON yechib olingan stavka - DB'ga yozilmaydi (bu
-        # jarayon xotirasidan tashqarida saqlanmaydi, xuddi
-        # `self.questions` kabi), `_finish_duel`/`forfeit_duel`
-        # yutuq/qaytarish hisobini shundan chiqaradi.
-        self.stake_coins: int = 0
 
         # Duel boshlanishida bir marta tanlab olinadi - ikkala o'yinchi ham
         # aynan bir xil savollarni, bir xil tartibda ko'radi (mustaqil
@@ -165,31 +158,11 @@ async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_
         if user_a is None or user_b is None:
             return  # taklif qabul qilingan payt bilan orasida hisob o'chirilgan bo'lishi mumkin
 
-        stake = await economy_config.get_int(db, economy_config.DUEL_STAKE_COINS)
-
-        # Anti-Rage-Quit: duel ACTIVE bo'lishi BILANOQ - savollar
-        # tanlanishidan HAM oldin - ikkala o'yinchidan ham stavka ATOMIK
-        # ravishda yechiladi. Ikkalasi ham yetarli bo'lmasa, HECH KIMDAN
-        # pul yechilmaydi: hali COMMIT qilinmagan, quyida shunchaki
-        # `return` qilinsa, session yopilganda avtomatik bekor
-        # (rollback) bo'ladi - alohida "qaytarish" chaqiruvi shart emas.
-        try:
-            await wallet.charge_duel_stake(db, user_a, stake)
-            await wallet.charge_duel_stake(db, user_b, stake)
-        except wallet.InsufficientBalanceError:
-            await manager.send_to_user(
-                user_a_id, {"type": "duel_start_failed", "reason": "insufficient_coins", "stake_coins": stake}
-            )
-            await manager.send_to_user(
-                user_b_id, {"type": "duel_start_failed", "reason": "insufficient_coins", "stake_coins": stake}
-            )
-            return
-
         category = await db.get(Category, category_id)
 
         questions = await _pick_questions(db, category_id, total_requested)
         if not questions:
-            return  # kategoriyada savol yo'q - duel boshlanmaydi, stavkalar ham hali committed emas
+            return  # kategoriyada savol yo'q - duel boshlanmaydi
 
         actual_total = len(questions)
 
@@ -240,7 +213,6 @@ async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_
 
     state = _ActiveDuel(duel.id, user_a_id, user_b_id, category_id, actual_total)
     state.questions = questions_data
-    state.stake_coins = stake
     _active_duels[duel.id] = state
     _user_active_duel[user_a_id] = duel.id
     _user_active_duel[user_b_id] = duel.id
@@ -253,7 +225,6 @@ async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_
             "category": category_summary,
             "total_questions": actual_total,
             "opponent": _user_public(user_b),
-            "stake_coins": stake,
         },
     )
     await manager.send_to_user(
@@ -264,7 +235,6 @@ async def start_duel(category_id: int, user_a_id: str, user_b_id: str, question_
             "category": category_summary,
             "total_questions": actual_total,
             "opponent": _user_public(user_a),
-            "stake_coins": stake,
         },
     )
 
@@ -426,12 +396,9 @@ async def forfeit_duel(leaving_user_id: str, duel_id: str) -> None:
     the duel is torn down immediately instead of being left to hang
     forever waiting on a side that's gone.
 
-    Coin stavkasi bu qoidadan TASHQARI (2026-09-17, Anti-Rage-Quit): u
-    XP/ball emas, pul - chiquvchi `start_duel`da ALLAQACHON to'lagan
-    stavkasini qaytarib OLMAYDI, qolgan o'yinchi esa yutuq fondini
-    (ikkala stavka, soliqdan keyin - xuddi oddiy g'alaba kabi)
-    `wallet.award_duel_prize` orqali oladi. Bu match natijasi (won/lost/
-    XP) statistikasiga TA'SIR qilmaydi - faqat Coin harakati.
+    Qolgan o'yinchiga g'olib bonusi ham berilmaydi - aks holda ikkita
+    hamkorlashgan akkaunt "boshlab, darhol chiqib ketish" orqali bonusni
+    o'yinsiz yig'ishi mumkin bo'lardi.
     """
     state = _active_duels.get(duel_id)
     if state is None or leaving_user_id not in (state.user_a_id, state.user_b_id):
@@ -452,29 +419,16 @@ async def forfeit_duel(leaving_user_id: str, duel_id: str) -> None:
 
     other_user_id = _other_user_id(state, leaving_user_id)
 
-    coins_awarded = 0
     async with AsyncSessionLocal() as db:
         duel = await db.get(Duel, duel_id)
         if duel is not None:
             duel.status = "cancelled"
             duel.finished_at = datetime.now(timezone.utc)
-
-        # Chiquvchining stavkasi qaytarilmaydi - qolgan o'yinchi yutuq
-        # fondini (soliqdan keyin) oladi. Xuddi shu soliq shu yerda ham
-        # qo'llanadi (`wallet.award_duel_prize`ning izohiga qarang) -
-        # aks holda ikkita hamkorlashgan akkaunt "boshlab, ataylab
-        # chiqib ketish" orqali soliqni butunlay aylanib o'tishi mumkin
-        # bo'lardi.
-        other_user = await db.get(User, other_user_id)
-        if other_user is not None:
-            tax_percent = await economy_config.get_int(db, economy_config.DUEL_TAX_PERCENT)
-            coins_awarded = await wallet.award_duel_prize(db, other_user, state.stake_coins, tax_percent)
-
         await db.commit()
 
     await manager.send_to_user(
         other_user_id,
-        {"type": "duel_cancelled", "duel_id": duel_id, "reason": "opponent_left", "coins_earned": coins_awarded},
+        {"type": "duel_cancelled", "duel_id": duel_id, "reason": "opponent_left", "coins_earned": 0},
     )
 
     _active_duels.pop(duel_id, None)
@@ -541,9 +495,7 @@ async def _handle_user_finished_question(state: _ActiveDuel, user_id: str, index
                 elapsed_ms=elapsed_ms,
             )
         )
-        player = await db.get(User, user_id)
-        if player is not None:
-            await wallet.charge_for_question_play(db, player, q["question_id"])
+        await wallet.record_question_play(db, q["question_id"])
         await db.commit()
 
     await manager.send_to_user(
@@ -696,7 +648,7 @@ async def _finish_duel(state: _ActiveDuel) -> None:
             user_a.games_played += 1
             if a_result == "won":
                 user_a.total_wins += 1
-            await wallet.on_game_finished(db, user_a, duel.finished_at, is_first_game_ever=user_a.games_played == 1)
+            await wallet.on_game_finished(db, user_a, duel.finished_at)
             db.add(XpEvent(user_id=state.user_a_id, amount=a_xp))
 
         if user_b is not None:
@@ -704,34 +656,32 @@ async def _finish_duel(state: _ActiveDuel) -> None:
             user_b.games_played += 1
             if b_result == "won":
                 user_b.total_wins += 1
-            await wallet.on_game_finished(db, user_b, duel.finished_at, is_first_game_ever=user_b.games_played == 1)
+            await wallet.on_game_finished(db, user_b, duel.finished_at)
             db.add(XpEvent(user_id=state.user_b_id, amount=b_xp))
 
-        # Duel stavkasi (2026-09-17, anti-farming/inflyatsiya himoyasi):
-        # stavka `state.stake_coins`da - ikkalasidan ham ALLAQACHON
-        # `start_duel`da yechilgan. G'olib yutuq fondini (soliqdan
-        # keyin) oladi, mag'lub hech narsa qaytarib olmaydi (puli
-        # allaqachon ketgan), durangda ikkalasi ham o'zining stavkasini
-        # qaytarib oladi. Hisobi o'chirilgan (user_a/user_b None) tomonga
-        # hech narsa to'lanmaydi - to'lash uchun endi hisob yo'q.
+        # Stavka yo'q (2026-10-14): g'olib tizimdan bonus oladi, mag'lub
+        # va durang hech narsa yo'qotmaydi. Bitta ham to'g'ri javobsiz
+        # "g'alaba" (ikkalasi ham 0, vaqt bo'yicha ajralgan) bonus bermaydi.
         a_coin_change = b_coin_change = 0
-        if a_result == "won":
-            if user_a is not None:
-                tax_percent = await economy_config.get_int(db, economy_config.DUEL_TAX_PERCENT)
-                a_coin_change = await wallet.award_duel_prize(db, user_a, state.stake_coins, tax_percent)
-        elif b_result == "won":
-            if user_b is not None:
-                tax_percent = await economy_config.get_int(db, economy_config.DUEL_TAX_PERCENT)
-                b_coin_change = await wallet.award_duel_prize(db, user_b, state.stake_coins, tax_percent)
-        else:  # draw
-            if user_a is not None:
-                await wallet.refund_duel_stake(db, user_a, state.stake_coins)
-                a_coin_change = state.stake_coins
-            if user_b is not None:
-                await wallet.refund_duel_stake(db, user_b, state.stake_coins)
-                b_coin_change = state.stake_coins
+        if a_result == "won" and user_a is not None and a_correct > 0:
+            a_coin_change = await wallet.award_duel_win_bonus(db, user_a, state.duel_id)
+        elif b_result == "won" and user_b is not None and b_correct > 0:
+            b_coin_change = await wallet.award_duel_win_bonus(db, user_b, state.duel_id)
+
+        referral_rewards = []
+        for finished_user in (user_a, user_b):
+            if finished_user is None:
+                continue
+            reward = await referral.award_if_qualified(
+                db, finished_user, category=category, question_count=state.total_questions
+            )
+            if reward is not None:
+                referral_rewards.append(reward)
 
         await db.commit()
+
+        for reward in referral_rewards:
+            await referral.notify_referrer(db, reward)
 
     await manager.send_to_user(
         state.user_a_id,

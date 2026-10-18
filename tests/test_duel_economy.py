@@ -1,11 +1,9 @@
-"""Duel Coin stavkasi (2026-09-17, anti-farming/inflyatsiya himoyasi):
+"""Duel Coin qoidalari (2026-10-14 qarori - stavka YO'Q):
 
-1. Anti-Rage-Quit - duel ACTIVE bo'lishi bilanoq (`start_duel`) ikkala
-   o'yinchidan ham stavka darhol yechiladi; chiqib ketgan/aloqasi uzilgan
-   o'yinchi buni qaytarib olmaydi.
-2. Anti-Farming/Deflyatsiya - g'olib yutuq fondini SOLIQdan keyin oladi
-   (ushlab qolingan qism hech kimga yozilmaydi - yo'q qilinadi); durang
-   bo'lsa ikkalasi ham o'zining stavkasini soliqsiz qaytarib oladi.
+1. Duel boshlanganda hech kimdan hech narsa yechilmaydi, Coin'i yo'q
+   o'yinchi ham duel o'ynay oladi.
+2. G'olib tizimdan bonus oladi (raqibdan olinmaydi); mag'lub va durang
+   hech narsa yo'qotmaydi; chiqib ketishda (forfeit) hech kimga bonus yo'q.
 3. Xavfsizlik - Duel hech qachon Diamond bermaydi/yechmaydi, faqat Coin.
 """
 
@@ -135,80 +133,41 @@ async def _play_and_finish(session_maker, category_id: int, *, a_correct_count: 
     return state, duel_id
 
 
-# --- 1. Anti-Rage-Quit: stavka duel ACTIVE bo'lganda darhol yechiladi ---
+# --- 1. Stavka yo'q: duel boshida hech narsa yechilmaydi ---
 
 
 @pytest.mark.anyio
-async def test_start_duel_charges_the_stake_from_both_players(_isolated_engine):
+async def test_start_duel_charges_nothing(_isolated_engine):
     await _seed_users(_isolated_engine, a_coins=100, b_coins=100)
     category_id = await _seed_category_with_questions(_isolated_engine)
 
     await duel_engine.start_duel(category_id, "user-a", "user-b", 2)
 
     async with _isolated_engine() as db:
-        user_a = await db.get(User, "user-a")
-        user_b = await db.get(User, "user-b")
-        assert user_a.coin_balance == 90
-        assert user_b.coin_balance == 90
-
-    [duel_id] = list(duel_engine._active_duels.keys())
-    assert duel_engine._active_duels[duel_id].stake_coins == 10
+        assert (await db.get(User, "user-a")).coin_balance == 100
+        assert (await db.get(User, "user-b")).coin_balance == 100
+    assert len(duel_engine._active_duels) == 1
 
 
 @pytest.mark.anyio
-async def test_start_duel_charges_nothing_when_one_player_lacks_the_stake(_isolated_engine):
-    await _seed_users(_isolated_engine, a_coins=5, b_coins=100)
+async def test_players_with_zero_coins_can_still_duel(_isolated_engine):
+    await _seed_users(_isolated_engine, a_coins=0, b_coins=0)
     category_id = await _seed_category_with_questions(_isolated_engine)
-
-    await duel_engine.start_duel(category_id, "user-a", "user-b", 2)
-
-    async with _isolated_engine() as db:
-        user_a = await db.get(User, "user-a")
-        user_b = await db.get(User, "user-b")
-        assert user_a.coin_balance == 5
-        # B had enough, but nothing is charged unless BOTH can pay.
-        assert user_b.coin_balance == 100
-
-    assert duel_engine._active_duels == {}
-    async with _isolated_engine() as db:
-        assert (await db.execute(select(Duel))).scalars().all() == []
-
-
-@pytest.mark.anyio
-async def test_start_duel_notifies_both_players_when_the_stake_cannot_be_charged(_isolated_engine):
-    await _seed_users(_isolated_engine, a_coins=0, b_coins=100)
-    category_id = await _seed_category_with_questions(_isolated_engine)
-    ws_a, ws_b = _FakeWebSocket(), _FakeWebSocket()
+    ws_a = _FakeWebSocket()
     manager.connect("user-a", ws_a)
-    manager.connect("user-b", ws_b)
 
     await duel_engine.start_duel(category_id, "user-a", "user-b", 2)
 
-    expected = {"type": "duel_start_failed", "reason": "insufficient_coins", "stake_coins": 10}
-    assert ws_a.sent == [expected]
-    assert ws_b.sent == [expected]
+    assert len(duel_engine._active_duels) == 1
+    assert ws_a.sent[0]["type"] == "duel_started"
+    assert "stake_coins" not in ws_a.sent[0]
+
+
+# --- 2. G'olib bonusi ---
 
 
 @pytest.mark.anyio
-async def test_forfeit_does_not_refund_the_leaving_players_stake(_isolated_engine):
-    await _seed_users(_isolated_engine, a_coins=100, b_coins=100)
-    category_id = await _seed_category_with_questions(_isolated_engine)
-    await duel_engine.start_duel(category_id, "user-a", "user-b", 2)
-    [duel_id] = list(duel_engine._active_duels.keys())
-
-    await duel_engine.forfeit_duel("user-a", duel_id)
-
-    async with _isolated_engine() as db:
-        user_a = await db.get(User, "user-a")
-        # Still down the 10 it staked at duel start - never refunded.
-        assert user_a.coin_balance == 90
-
-
-# --- 2. Anti-Farming/Deflyatsiya: g'olib soliqdan keyin oladi, durang soliqsiz qaytadi ---
-
-
-@pytest.mark.anyio
-async def test_finish_duel_awards_the_winner_the_pool_minus_tax(_isolated_engine):
+async def test_finish_duel_gives_the_winner_the_bonus_and_takes_nothing_from_the_loser(_isolated_engine):
     await _seed_users(_isolated_engine, a_coins=100, b_coins=100)
     category_id = await _seed_category_with_questions(_isolated_engine, count=3)
 
@@ -216,97 +175,78 @@ async def test_finish_duel_awards_the_winner_the_pool_minus_tax(_isolated_engine
         _isolated_engine, category_id, a_correct_count=3, b_correct_count=1, question_count=3
     )
 
+    bonus = economy_config.DEFAULTS[economy_config.DUEL_WIN_BONUS]
     async with _isolated_engine() as db:
-        user_a = await db.get(User, "user-a")
-        user_b = await db.get(User, "user-b")
-        # Pool = 10 + 10 = 20; 10% soliq = 2; g'olib 18 oladi.
-        assert user_a.coin_balance == 100 - 10 + 18
-        assert user_b.coin_balance == 100 - 10  # mag'lub - hech narsa qaytmaydi
-
+        assert (await db.get(User, "user-a")).coin_balance == 100 + bonus
+        assert (await db.get(User, "user-b")).coin_balance == 100
         duel = await db.get(Duel, duel_id)
-        assert duel.user_a_result == "won"
-        assert duel.user_b_result == "lost"
+        assert (duel.user_a_result, duel.user_b_result) == ("won", "lost")
 
     assert state.finished is True
 
 
 @pytest.mark.anyio
-async def test_finish_duel_burns_exactly_the_tax_amount(_isolated_engine):
+async def test_finish_duel_draw_gives_nobody_anything(_isolated_engine):
     await _seed_users(_isolated_engine, a_coins=100, b_coins=100)
     category_id = await _seed_category_with_questions(_isolated_engine, count=3)
 
-    await _play_and_finish(_isolated_engine, category_id, a_correct_count=3, b_correct_count=0, question_count=3)
-
-    async with _isolated_engine() as db:
-        user_a = await db.get(User, "user-a")
-        user_b = await db.get(User, "user-b")
-        total_after = user_a.coin_balance + user_b.coin_balance
-        # 200 boshlang'ich - 2 (10% of the 20-coin pool) = 198. Qolgan hech
-        # kimga yozilmadi - butunlay yo'q qilindi.
-        assert total_after == 200 - 2
-
-
-@pytest.mark.anyio
-async def test_finish_duel_refunds_both_stakes_on_a_draw_with_no_tax(_isolated_engine):
-    await _seed_users(_isolated_engine, a_coins=100, b_coins=100)
-    category_id = await _seed_category_with_questions(_isolated_engine, count=3)
-
-    state, duel_id = await _play_and_finish(
+    _, duel_id = await _play_and_finish(
         _isolated_engine, category_id, a_correct_count=2, b_correct_count=2, question_count=3
     )
 
     async with _isolated_engine() as db:
-        user_a = await db.get(User, "user-a")
-        user_b = await db.get(User, "user-b")
-        assert user_a.coin_balance == 100
-        assert user_b.coin_balance == 100
-
+        assert (await db.get(User, "user-a")).coin_balance == 100
+        assert (await db.get(User, "user-b")).coin_balance == 100
         duel = await db.get(Duel, duel_id)
-        assert duel.user_a_result == "draw"
-        assert duel.user_b_result == "draw"
+        assert (duel.user_a_result, duel.user_b_result) == ("draw", "draw")
 
 
 @pytest.mark.anyio
-async def test_forfeit_pays_the_remaining_player_the_pool_minus_tax(_isolated_engine):
+async def test_a_win_with_zero_correct_answers_gives_no_bonus(_isolated_engine):
     await _seed_users(_isolated_engine, a_coins=100, b_coins=100)
     category_id = await _seed_category_with_questions(_isolated_engine, count=3)
+
+    await _play_and_finish(_isolated_engine, category_id, a_correct_count=0, b_correct_count=0, question_count=3)
+
+    async with _isolated_engine() as db:
+        assert (await db.get(User, "user-a")).coin_balance == 100
+        assert (await db.get(User, "user-b")).coin_balance == 100
+
+
+@pytest.mark.anyio
+async def test_forfeit_gives_nobody_coins(_isolated_engine):
+    await _seed_users(_isolated_engine, a_coins=100, b_coins=100)
+    category_id = await _seed_category_with_questions(_isolated_engine, count=3)
+    ws_b = _FakeWebSocket()
+    manager.connect("user-b", ws_b)
     await duel_engine.start_duel(category_id, "user-a", "user-b", 3)
     [duel_id] = list(duel_engine._active_duels.keys())
 
     await duel_engine.forfeit_duel("user-a", duel_id)
 
     async with _isolated_engine() as db:
-        user_a = await db.get(User, "user-a")
-        user_b = await db.get(User, "user-b")
-        assert user_a.coin_balance == 90  # forfeits its own stake
-        assert user_b.coin_balance == 90 + 18  # pool (20) minus 10% tax (2)
+        assert (await db.get(User, "user-a")).coin_balance == 100
+        assert (await db.get(User, "user-b")).coin_balance == 100
+    cancelled = [m for m in ws_b.sent if m["type"] == "duel_cancelled"]
+    assert cancelled[0]["coins_earned"] == 0
 
 
 @pytest.mark.anyio
-async def test_duel_stake_and_tax_are_configurable_via_economy_config(_isolated_engine):
+async def test_duel_win_bonus_is_configurable_via_economy_config(_isolated_engine):
     await _seed_users(_isolated_engine, a_coins=100, b_coins=100)
     category_id = await _seed_category_with_questions(_isolated_engine, count=1)
 
     async with _isolated_engine() as db:
-        db.add(AppConfig(key=economy_config.DUEL_STAKE_COINS, value="20"))
-        db.add(AppConfig(key=economy_config.DUEL_TAX_PERCENT, value="50"))
+        db.add(AppConfig(key=economy_config.DUEL_WIN_BONUS, value="12"))
         await db.commit()
 
-    state, duel_id = await _play_and_finish(
-        _isolated_engine, category_id, a_correct_count=1, b_correct_count=0, question_count=1
-    )
+    await _play_and_finish(_isolated_engine, category_id, a_correct_count=1, b_correct_count=0, question_count=1)
 
     async with _isolated_engine() as db:
-        user_a = await db.get(User, "user-a")
-        user_b = await db.get(User, "user-b")
-        # Stavka 20 - balans 80/80 bo'ladi. Pool = 40, 50% soliq = 20,
-        # g'olib 20 oladi -> 80 + 20 = 100 (o'zgarmagandek ko'rinadi, lekin
-        # sinovda muhimi: konfiguratsiya haqiqatan o'qildi).
-        assert user_a.coin_balance == 100
-        assert user_b.coin_balance == 80
+        assert (await db.get(User, "user-a")).coin_balance == 112
 
 
-# --- 3. Xavfsizlik: Duel yutug'i hech qachon Diamond bermaydi ---
+# --- 3. Xavfsizlik: Duel hech qachon Diamond bermaydi ---
 
 
 @pytest.mark.anyio
@@ -315,46 +255,19 @@ async def test_finish_duel_never_touches_diamond_balance(_isolated_engine):
     category_id = await _seed_category_with_questions(_isolated_engine, count=3)
 
     async with _isolated_engine() as db:
-        user_a = await db.get(User, "user-a")
-        user_b = await db.get(User, "user-b")
-        user_a.diamond_balance = 42
-        user_b.diamond_balance = 77
+        (await db.get(User, "user-a")).diamond_balance = 42
+        (await db.get(User, "user-b")).diamond_balance = 77
         await db.commit()
 
     await _play_and_finish(_isolated_engine, category_id, a_correct_count=3, b_correct_count=0, question_count=3)
 
     async with _isolated_engine() as db:
-        user_a = await db.get(User, "user-a")
-        user_b = await db.get(User, "user-b")
-        assert user_a.diamond_balance == 42
-        assert user_b.diamond_balance == 77
+        assert (await db.get(User, "user-a")).diamond_balance == 42
+        assert (await db.get(User, "user-b")).diamond_balance == 77
 
 
 @pytest.mark.anyio
-async def test_forfeit_never_touches_diamond_balance(_isolated_engine):
-    await _seed_users(_isolated_engine, a_coins=100, b_coins=100)
-    category_id = await _seed_category_with_questions(_isolated_engine, count=3)
-
-    async with _isolated_engine() as db:
-        user_a = await db.get(User, "user-a")
-        user_b = await db.get(User, "user-b")
-        user_a.diamond_balance = 5
-        user_b.diamond_balance = 9
-        await db.commit()
-
-    await duel_engine.start_duel(category_id, "user-a", "user-b", 3)
-    [duel_id] = list(duel_engine._active_duels.keys())
-    await duel_engine.forfeit_duel("user-a", duel_id)
-
-    async with _isolated_engine() as db:
-        user_a = await db.get(User, "user-a")
-        user_b = await db.get(User, "user-b")
-        assert user_a.diamond_balance == 5
-        assert user_b.diamond_balance == 9
-
-
-@pytest.mark.anyio
-async def test_all_duel_stake_ledger_entries_use_only_the_coin_currency(_isolated_engine):
+async def test_duel_ledger_entries_use_only_the_coin_currency(_isolated_engine):
     await _seed_users(_isolated_engine, a_coins=100, b_coins=100)
     category_id = await _seed_category_with_questions(_isolated_engine, count=3)
 
@@ -362,8 +275,6 @@ async def test_all_duel_stake_ledger_entries_use_only_the_coin_currency(_isolate
 
     async with _isolated_engine() as db:
         rows = (await db.execute(select(CurrencyTransaction))).scalars().all()
-        duel_rows = [r for r in rows if r.reason in ("duel_stake", "duel_prize", "duel_stake_refund")]
-        assert duel_rows  # sanity - something was actually recorded
-        assert all(r.currency == "coin" for r in duel_rows)
-        reasons = {r.reason for r in duel_rows}
-        assert reasons == {"duel_stake", "duel_prize"}
+        duel_rows = [r for r in rows if r.reason == "duel_win_bonus"]
+        assert len(duel_rows) == 1
+        assert duel_rows[0].currency == "coin"

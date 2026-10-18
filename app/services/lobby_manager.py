@@ -483,13 +483,11 @@ async def _handle_participant_finished_question(
         }
     )
 
-    user_id = game.participant_user_ids.get(participant_id)
-    if user_id is not None:
+    # Lobby Coin'siz (sinf - xavfsiz joy): faqat o'ynalish analitikasi.
+    if game.participant_user_ids.get(participant_id) is not None:
         async with AsyncSessionLocal() as db:
-            player = await db.get(User, user_id)
-            if player is not None:
-                await wallet.charge_for_question_play(db, player, q["question_id"])
-                await db.commit()
+            await wallet.record_question_play(db, q["question_id"])
+            await db.commit()
 
     participant = room.participants.get(participant_id)
     if participant is not None:
@@ -586,7 +584,7 @@ async def _finish_game(room: _Room) -> None:
 
             user.total_xp += xp
             user.games_played += 1
-            await wallet.on_game_finished(db, user, now, is_first_game_ever=user.games_played == 1)
+            await wallet.on_game_finished(db, user, now)
             db.add(XpEvent(user_id=user_id, amount=xp))
 
             db.add(
