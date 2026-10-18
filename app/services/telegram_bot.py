@@ -75,15 +75,15 @@ async def _handle_start(db: AsyncSession, telegram_user_id: int, chat_id: int) -
         await telegram_client.send_message(
             chat_id,
             "Xush kelibsiz, Zukkor botiga qaytganingizdan xursandmiz! \U0001f44b\n\n"
-            "Hisobingiz allaqachon ulangan - Diamond sotib olish uchun /diamond yozing.",
+            "Hisobingiz allaqachon ulangan - bepul Diamond olish uchun /diamond yozing.",
         )
         return
 
     await telegram_client.send_message(
         chat_id,
         "Assalomu alaykum! Bu - Zukkor viktorina ilovasining rasmiy boti \U0001f44b\n\n"
-        "Bu yerda Zukkor ilovasidagi hisobingizga Diamond (test yaratish uchun "
-        "ishlatiladigan valyuta) sotib olishingiz mumkin bo'ladi.\n\n"
+        "Bu yerda Zukkor ilovasidagi hisobingiz uchun Diamond (test yaratish uchun "
+        "ishlatiladigan valyuta) ni kuniga bir marta bepul olishingiz mumkin.\n\n"
         "Boshlash uchun hisobingizni ulang: /link",
     )
 
@@ -92,7 +92,7 @@ async def _handle_link_command(db: AsyncSession, telegram_user_id: int, chat_id:
     existing_user = await _find_user_by_telegram_id(db, telegram_user_id)
     if existing_user is not None:
         await telegram_client.send_message(
-            chat_id, "Hisobingiz allaqachon ulangan. Diamond sotib olish uchun /diamond yozing.",
+            chat_id, "Hisobingiz allaqachon ulangan. Bepul Diamond olish uchun /diamond yozing.",
         )
         return
 
@@ -232,7 +232,7 @@ async def handle_update(db: AsyncSession, update: dict) -> None:
                 await _handle_diamond_command(db, telegram_user_id, chat_id)
             else:
                 await telegram_client.send_message(
-                    chat_id, "Hisobni ulash uchun /link, Diamond sotib olish uchun /diamond yozing."
+                    chat_id, "Hisobni ulash uchun /link, bepul Diamond olish uchun /diamond yozing."
                 )
 
         elif callback_query is not None:

@@ -105,7 +105,7 @@ async def link_telegram_account(
     await telegram_client.send_message(
         link_code.telegram_chat_id,
         "✅ Zukkor hisobingiz muvaffaqiyatli bog'landi!\n\n"
-        "Diamond sotib olish uchun /diamond yozing.",
+        "Bepul Diamond olish uchun /diamond yozing.",
     )
 
     return TelegramLinkOut(diamond_balance=current_user.diamond_balance, coin_balance=current_user.coin_balance)
